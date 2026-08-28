@@ -4,7 +4,7 @@ set -e
 # killport installer script
 # Usage: curl -fsSL https://raw.githubusercontent.com/tyzrex/killport/main/install.sh | sh
 
-REPO="tyzrex/killport"
+REPO="tyzrex/kport"
 BIN_NAME="killport"
 ALIAS_NAME="kport"
 
@@ -24,7 +24,7 @@ echo "==> Installing killport to $INSTALL_DIR..."
 
 if command -v go >/dev/null 2>&1; then
     echo "==> Building from source with Go..."
-    go install github.com/tyzrex/killport/cmd/killport@latest
+    go install github.com/tyzrex/kport/cmd/killport@latest
     if [ -f "$HOME/go/bin/killport" ]; then
         cp "$HOME/go/bin/killport" "$INSTALL_DIR/killport"
         ln -sf "$INSTALL_DIR/killport" "$INSTALL_DIR/$ALIAS_NAME"
@@ -62,6 +62,6 @@ if curl -sSL -o "$TMP_DIR/killport.tar.gz" "$URL"; then
     echo "✓ killport $LATEST_TAG successfully installed to $INSTALL_DIR/killport"
     echo "✓ Alias '$ALIAS_NAME' created!"
 else
-    echo "Failed to download prebuilt binary. Please install using 'go install github.com/tyzrex/killport/cmd/killport@latest'" >&2
+    echo "Failed to download prebuilt binary. Please install using 'go install github.com/tyzrex/kport/cmd/killport@latest'" >&2
     exit 1
 fi

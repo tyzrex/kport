@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/types"
 )
 
 func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {

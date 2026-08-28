@@ -1,7 +1,7 @@
 package proc
 
 import (
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/types"
 )
 
 // FindProcesses returns processes listening on the given ports.

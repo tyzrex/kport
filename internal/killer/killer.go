@@ -4,8 +4,8 @@ import (
 	"errors"
 	"os"
 
-	"github.com/tyzrex/killport/internal/proc"
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/internal/proc"
+	"github.com/tyzrex/kport/types"
 )
 
 var (

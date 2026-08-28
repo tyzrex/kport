@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/types"
 )
 
 const (

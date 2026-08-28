@@ -14,13 +14,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tyzrex/killport"
-	"github.com/tyzrex/killport/internal/completion"
-	"github.com/tyzrex/killport/internal/config"
-	"github.com/tyzrex/killport/internal/detect"
-	"github.com/tyzrex/killport/internal/docker"
-	"github.com/tyzrex/killport/internal/notify"
-	"github.com/tyzrex/killport/internal/tui"
+	"github.com/tyzrex/kport"
+	"github.com/tyzrex/kport/internal/completion"
+	"github.com/tyzrex/kport/internal/config"
+	"github.com/tyzrex/kport/internal/detect"
+	"github.com/tyzrex/kport/internal/docker"
+	"github.com/tyzrex/kport/internal/notify"
+	"github.com/tyzrex/kport/internal/tui"
 )
 
 const version = "1.2.0"

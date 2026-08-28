@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/types"
 )
 
 func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, error) {

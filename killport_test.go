@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyzrex/killport"
+	"github.com/tyzrex/kport"
 )
 
 // Helper to spawn a dummy listener in a background subprocess

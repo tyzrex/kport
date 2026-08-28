@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/types"
 )
 
 type socketInfo struct {

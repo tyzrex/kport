@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyzrex/killport/internal/killer"
-	"github.com/tyzrex/killport/internal/proc"
+	"github.com/tyzrex/kport/internal/killer"
+	"github.com/tyzrex/kport/internal/proc"
 )
 
 // Presets maps common framework / service names to their default development ports.

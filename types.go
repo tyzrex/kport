@@ -1,7 +1,7 @@
 package killport
 
 import (
-	"github.com/tyzrex/killport/types"
+	"github.com/tyzrex/kport/types"
 )
 
 // Type aliases for seamless root package usage
