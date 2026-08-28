@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build Matrix
+        run: |
+          mkdir -p dist
+          TAG=${GITHUB_REF#refs/tags/}
+          
+          # Linux amd64 & arm64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/killport ./cmd/killport
+          tar -czf dist/killport_linux_amd64.tar.gz -C dist killport && rm dist/killport
+
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/killport ./cmd/killport
+          tar -czf dist/killport_linux_arm64.tar.gz -C dist killport && rm dist/killport
+
+          # Darwin amd64 & arm64
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/killport ./cmd/killport
+          tar -czf dist/killport_darwin_amd64.tar.gz -C dist killport && rm dist/killport
+
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/killport ./cmd/killport
+          tar -czf dist/killport_darwin_arm64.tar.gz -C dist killport && rm dist/killport
+
+          # Windows amd64 & arm64
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/killport.exe ./cmd/killport
+          zip -j dist/killport_windows_amd64.zip dist/killport.exe && rm dist/killport.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -58,13 +58,24 @@ func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, erro
 			}
 		}
 	} else if len(ports) == 0 && len(results) == 0 {
-		// If scanning all ports and /proc returned empty (e.g. restricted container environment)
+		// If scanning all ports and /proc returned empty
 		if ssResults, err := scanWithSS(nil, opts); err == nil && len(ssResults) > 0 {
 			results = append(results, ssResults...)
 		}
 	}
 
-	return DeduplicateProcesses(results), nil
+	// Filter by NameFilter if provided
+	var filtered []types.Process
+	for _, p := range results {
+		if MatchesNameFilter(p, opts.NameFilter) {
+			if opts.IncludeTree {
+				p.ChildrenPIDs = FindProcessChildren(p.PID)
+			}
+			filtered = append(filtered, p)
+		}
+	}
+
+	return DeduplicateProcesses(filtered), nil
 }
 
 func getMissingPorts(requested []int, found []types.Process) []int {
@@ -104,7 +115,7 @@ func scanProcNet(ports []int, opts types.FindOptions) ([]types.Process, error) {
 	}
 
 	// Map inodes to PIDs by scanning /proc/<pid>/fd
-	return scanPIDsForInodes(inodeMap)
+	return scanPIDsForInodes(inodeMap, opts)
 }
 
 func parseProcNetFile(filePath string, proto types.Protocol, isIPv6 bool, ports []int, inodeMap map[string]socketInfo) {
@@ -116,7 +127,7 @@ func parseProcNetFile(filePath string, proto types.Protocol, isIPv6 bool, ports 
 
 	scanner := bufio.NewScanner(file)
 	if !scanner.Scan() {
-		return // skip header
+		return
 	}
 
 	for scanner.Scan() {
@@ -126,9 +137,6 @@ func parseProcNetFile(filePath string, proto types.Protocol, isIPv6 bool, ports 
 			continue
 		}
 
-		// fields[1] = local_address (hex_ip:hex_port)
-		// fields[3] = st (state)
-		// fields[9] = inode
 		localAddr := fields[1]
 		state := fields[3]
 		inode := fields[9]
@@ -137,7 +145,6 @@ func parseProcNetFile(filePath string, proto types.Protocol, isIPv6 bool, ports 
 			continue
 		}
 
-		// For TCP, we want 0A (LISTEN). For UDP, 07 (CLOSE) represents bound/listening sockets.
 		if proto == types.ProtocolTCP && state != "0A" {
 			continue
 		}
@@ -179,7 +186,7 @@ func parseProcNetFile(filePath string, proto types.Protocol, isIPv6 bool, ports 
 	}
 }
 
-func scanPIDsForInodes(inodeMap map[string]socketInfo) ([]types.Process, error) {
+func scanPIDsForInodes(inodeMap map[string]socketInfo, opts types.FindOptions) ([]types.Process, error) {
 	procDir, err := os.Open("/proc")
 	if err != nil {
 		return nil, err
@@ -202,7 +209,6 @@ func scanPIDsForInodes(inodeMap map[string]socketInfo) ([]types.Process, error) 
 		fdDirPath := filepath.Join("/proc", entry, "fd")
 		fdDir, err := os.Open(fdDirPath)
 		if err != nil {
-			// Permission denied or process exited
 			continue
 		}
 
@@ -219,7 +225,6 @@ func scanPIDsForInodes(inodeMap map[string]socketInfo) ([]types.Process, error) 
 				continue
 			}
 
-			// socket:[12345] or [0000]:12345
 			var inode string
 			if strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
 				inode = link[8 : len(link)-1]
@@ -232,17 +237,21 @@ func scanPIDsForInodes(inodeMap map[string]socketInfo) ([]types.Process, error) 
 			}
 
 			if sock, ok := inodeMap[inode]; ok {
-				name, cmdline, exe, user := GetProcessDetails(pid)
+				name, cmdline, exe, user, ppid, cwd, rss := GetProcessDetails(pid)
 				results = append(results, types.Process{
 					PID:         pid,
+					PPID:        ppid,
 					Name:        name,
 					CommandLine: cmdline,
 					Exe:         exe,
+					Cwd:         cwd,
 					User:        user,
 					Port:        sock.port,
 					Protocol:    sock.protocol,
 					Address:     sock.address,
 					State:       sock.state,
+					MemoryRSS:   rss,
+					MemoryHuman: FormatBytes(rss),
 				})
 			}
 		}
@@ -302,7 +311,6 @@ func parseSSOutput(out []byte, ports []int, targetProto types.Protocol) ([]types
 			continue
 		}
 
-		// Find local address & port
 		var localAddr string
 		for _, f := range fields {
 			if strings.Contains(f, ":") && !strings.Contains(f, "users:") && !strings.Contains(f, "pid=") {
@@ -330,7 +338,6 @@ func parseSSOutput(out []byte, ports []int, targetProto types.Protocol) ([]types
 			continue
 		}
 
-		// Extract PID & process name
 		matches := procRegex.FindAllStringSubmatch(line, -1)
 		for _, match := range matches {
 			if len(match) >= 3 {
@@ -340,21 +347,25 @@ func parseSSOutput(out []byte, ports []int, targetProto types.Protocol) ([]types
 					continue
 				}
 
-				name, cmdline, exe, user := GetProcessDetails(pid)
+				name, cmdline, exe, user, ppid, cwd, rss := GetProcessDetails(pid)
 				if name == "" {
 					name = procName
 				}
 
 				results = append(results, types.Process{
 					PID:         pid,
+					PPID:        ppid,
 					Name:        name,
 					CommandLine: cmdline,
 					Exe:         exe,
+					Cwd:         cwd,
 					User:        user,
 					Port:        port,
 					Protocol:    proto,
 					Address:     localAddr,
 					State:       "LISTEN",
+					MemoryRSS:   rss,
+					MemoryHuman: FormatBytes(rss),
 				})
 			}
 		}
@@ -405,7 +416,7 @@ func parseLsofOutput(out []byte, defaultPort int, defaultProto types.Protocol) [
 
 	flush := func() {
 		if currentPID > 0 {
-			name, cmdline, exe, user := GetProcessDetails(currentPID)
+			name, cmdline, exe, user, ppid, cwd, rss := GetProcessDetails(currentPID)
 			if name == "" {
 				name = currentName
 			}
@@ -416,14 +427,18 @@ func parseLsofOutput(out []byte, defaultPort int, defaultProto types.Protocol) [
 
 			results = append(results, types.Process{
 				PID:         currentPID,
+				PPID:        ppid,
 				Name:        name,
 				CommandLine: cmdline,
 				Exe:         exe,
+				Cwd:         cwd,
 				User:        user,
 				Port:        defaultPort,
 				Protocol:    proto,
 				Address:     currentAddr,
 				State:       "LISTEN",
+				MemoryRSS:   rss,
+				MemoryHuman: FormatBytes(rss),
 			})
 			currentPID = 0
 			currentName = ""
@@ -482,16 +497,20 @@ func scanWithFuser(ports []int, opts types.FindOptions) ([]types.Process, error)
 					continue
 				}
 
-				name, cmdline, exe, user := GetProcessDetails(pid)
+				name, cmdline, exe, user, ppid, cwd, rss := GetProcessDetails(pid)
 				results = append(results, types.Process{
 					PID:         pid,
+					PPID:        ppid,
 					Name:        name,
 					CommandLine: cmdline,
 					Exe:         exe,
+					Cwd:         cwd,
 					User:        user,
 					Port:        port,
 					Protocol:    types.Protocol(protoStr),
 					State:       "LISTEN",
+					MemoryRSS:   rss,
+					MemoryHuman: FormatBytes(rss),
 				})
 			}
 		}

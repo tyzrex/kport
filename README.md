@@ -1,6 +1,6 @@
-# ⚡ killport
+# ⚡ killport (kport)
 
-> A high-performance, cross-platform Go library and CLI tool to instantly find and kill processes occupying network ports. Zero dependencies, sub-millisecond execution, and full support for Linux, macOS, and Windows.
+> A blazing-fast, cross-platform Go library and CLI tool to instantly find, inspect, and kill processes occupying network ports. Zero external dependencies, sub-millisecond execution, and first-class support for Linux, macOS, and Windows.
 
 Say goodbye to slow `npx kill-port` startup times and cumbersome `lsof -i :3000 | kill` bash pipelines.
 
@@ -8,68 +8,79 @@ Say goodbye to slow `npx kill-port` startup times and cumbersome `lsof -i :3000 
 
 ## ✨ Features
 
-- 🚀 **Blazing Fast**: Native OS inspection (reads `/proc` directly on Linux, `lsof` on macOS, Win32 API/`netstat` on Windows) — terminates in **< 2ms**!
-- 📦 **Zero Dependencies**: Pure standard library Go module.
-- 🎯 **Flexible Port Arguments**: Supports single ports (`3000`), colon prefixes (`:3000`), port ranges (`3000-3005`), comma-separated lists (`3000,8080,5432`), and any combination.
-- 🛡️ **Safety Guardrails**: Automatically protects critical system processes (PID 1, init, systemd) and self/calling process.
-- ⏱️ **Graceful Termination**: Sends `SIGTERM` first with a configurable timeout, cleanly escalating to `SIGKILL` only if the process refuses to terminate.
-- 🔍 **Interactive & Dry-Run Modes**: Preview what will be killed with `-d / --dry-run` or confirm interactively with `-i / --interactive`.
-- 📋 **Port Inspector**: List all active listening ports with `-l / --list` in a beautiful colorized table.
-- 🤖 **JSON Output**: Full `-j / --json` mode for scripting, automation, and CI/CD pipelines.
+- 🚀 **Blazing Fast (< 2ms)**: Direct `/proc` inspection in pure Go on Linux, optimized `lsof` on macOS, and native Windows API/`netstat`.
+- 📦 **Zero Dependencies**: Built strictly using Go's standard library.
+- 🎯 **Flexible Syntax**: Supports single ports (`3000`), colon prefixes (`:3000`), port ranges (`3000-3005`), comma lists (`3000,8080`), and **framework presets** (`next`, `vite`, `postgres`, `redis`, `dev`).
+- 🌲 **Process Tree Killer (`-T, --tree`)**: Kills the parent process and all of its spawned child processes cleanly to avoid orphan background processes.
+- ⏳ **Wait-Until-Free (`-W, --wait`)**: Blocks until the OS socket is completely released and unbound, avoiding `EADDRINUSE` race conditions in restart scripts (`kport 3000 -W && npm run dev`).
+- 👀 **Watch Mode (`-w, --watch`)**: Monitors ports in real-time and auto-kills any stray processes that bind to them.
+- 🛡️ **Safety Guardrails**: Protects PID 1 (init/systemd), the calling process, and warns before terminating protected system ports (SSH 22, DNS 53).
+- 🔍 **Detailed Inspector (`--inspect`)**: View exact memory usage (RSS), parent PID (PPID), working directory (CWD), executable path, and child process trees.
+- 🐚 **Shell Autocompletion**: Built-in autocompletion generators for `bash`, `zsh`, `fish`, and `powershell` with live listening port suggestions.
+- 🤖 **Machine-Readable JSON**: `--json` output for easy integration into dev tools and CI/CD pipelines.
 
 ---
 
 ## 📥 Installation
 
-### CLI Tool
+### Option 1: One-Liner Script (Linux & macOS)
 
-Install globally via `go install`:
+```bash
+curl -fsSL https://raw.githubusercontent.com/tyzrex/killport/main/install.sh | sh
+```
+
+### Option 2: Via `go install`
 
 ```bash
 go install github.com/tyzrex/killport/cmd/killport@latest
 ```
 
-*(You can also alias it to `kport` in your `~/.bashrc` or `~/.zshrc`: `alias kport=killport`)*
-
-### Go Library
-
-Add to your Go project:
-
-```bash
-go get github.com/tyzrex/killport
-```
+*(Installs both `killport` and the shorthand alias `kport`)*
 
 ---
 
 ## 💻 CLI Usage
 
 ```bash
-# Kill a single port (TCP & UDP)
+# Kill a port
 killport 3000
-
-# Using alias 'kport' or colon prefix
 kport :3000
 
-# Kill multiple ports at once
+# Kill multiple ports or ranges
 killport 3000 8080 5432
-
-# Kill port range
 killport 3000-3005
-
-# Kill comma-separated ports
 killport 3000,8080,9000
 
-# Mixed syntax
-killport :3000 8000-8002 5432,6379
+# Kill by framework preset
+killport next          # Next.js (port 3000)
+killport vite          # Vite (port 5173)
+killport dev           # Common dev ports (3000, 5173, 8080, 8000, 4200, 5000, ...)
+killport postgres      # PostgreSQL (port 5432)
+killport redis         # Redis (port 6379)
+
+# Kill process and all its child processes (tree kill)
+killport -T 3000
+
+# Kill and wait until port is verified free by the OS
+killport -W 3000
+
+# Watch mode: continuously monitor & kill anything grabbing port 3000
+killport -w 3000
+
+# Inspect detailed process information (Memory, CWD, PPID, Tree)
+killport --inspect 3000
+
+# Preview without killing (dry-run)
+killport -d 3000
 
 # Force kill immediately (SIGKILL)
 killport -f 3000
 
-# Preview processes without killing (dry-run)
-killport -d 3000
-
-# List active listening ports on the system
+# List all active listening ports on the system
 killport -l
+
+# Filter list by process name
+killport -l -n node
 
 # Interactive confirmation prompt
 killport -i 3000 8080
@@ -78,44 +89,53 @@ killport -i 3000 8080
 killport -j 3000
 ```
 
-### CLI Options
+---
 
-| Flag | Shorthand | Description |
-|------|-----------|-------------|
-| `--force` | `-f` | Force kill immediately (`SIGKILL`) |
-| `--graceful` | `-g` | Graceful shutdown (`SIGTERM` first, then `SIGKILL`) |
-| `--timeout <dur>` | `-t` | Graceful shutdown timeout (default: `1.5s`) |
-| `--protocol <p>` | `-p` | Filter protocol: `tcp`, `udp`, or `all` (default: `all`) |
-| `--dry-run` | `-d` | Preview processes without killing |
-| `--list` | `-l` | List listening processes |
-| `--interactive` | `-i` | Confirm each process interactively |
-| `--json` | `-j` | Output result as structured JSON |
-| `--verbose` | `-v` | Show full command lines and executable paths |
-| `--quiet` | `-q` | Silent execution (returns exit code) |
-| `--no-color` | | Disable colored terminal output |
-| `--version` | | Print version |
+## 🐚 Shell Autocompletion
+
+Enable tab-completion in your shell for instant port and flag suggestions:
+
+### Bash
+```bash
+killport completion bash > /etc/bash_completion.d/killport
+# or in ~/.bashrc:
+source <(killport completion bash)
+```
+
+### Zsh
+```bash
+# In your ~/.zshrc:
+source <(killport completion zsh)
+```
+
+### Fish
+```bash
+killport completion fish > ~/.config/fish/completions/killport.fish
+```
 
 ---
 
 ## 📚 Go Library Usage
 
-### 1. One-Liner Kill
+Import [`github.com/tyzrex/killport`](file:///home/tyzrex/Projects/killport/killport.go) into any Go project:
 
 ```go
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/tyzrex/killport"
 )
 
 func main() {
-	// Kill a single port
-	results, err := killport.Kill(3000)
+	// 1. One-liner kill
+	results, err := killport.Kill(3000, 8080)
 	if err != nil {
-		log.Fatalf("Error killing port: %v", err)
+		log.Fatalf("Error: %v", err)
 	}
 
 	for _, res := range results {
@@ -125,62 +145,71 @@ func main() {
 		}
 	}
 
-	// Kill multiple ports
-	killport.Kill(3000, 8080, 5432)
+	// 2. Custom Kill Options (Tree kill, WaitForFree, Force)
+	killport.KillPorts([]int{3000}, killport.KillOptions{
+		Protocol:    killport.ProtocolTCP,
+		Force:       true,
+		KillTree:    true,                // Kills child processes as well
+		WaitForFree: true,                // Blocks until port is freed
+		WaitTimeout: 3 * time.Second,
+	})
+
+	// 3. Inspect / Find active processes on ports
+	procs, _ := killport.Find(3000)
+	for _, p := range procs {
+		fmt.Printf("PID: %d | Name: %s | Memory: %s | CWD: %s\n",
+			p.PID, p.Name, p.MemoryHuman, p.Cwd)
+	}
+
+	// 4. Find processes by name
+	nodeProcs, _ := killport.FindByName("node")
+
+	// 5. Check if port is in use or wait for free
+	inUse, _ := killport.IsPortInUse(3000)
+	if inUse {
+		_ = killport.WaitForFree(3000, 5*time.Second)
+	}
+
+	// 6. Watch mode
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+	killport.Watch(ctx, []int{3000}, killport.DefaultKillOptions(), 500*time.Millisecond, func(res killport.KillResult) {
+		fmt.Printf("Auto-killed PID %d on port %d\n", res.Process.PID, res.Port)
+	})
 }
-```
-
-### 2. Custom Kill Options
-
-```go
-results, err := killport.KillPorts([]int{3000, 8080}, killport.KillOptions{
-    Protocol: killport.ProtocolTCP, // ProtocolTCP, ProtocolUDP, ProtocolAll
-    Force:    true,                 // Immediate SIGKILL
-    Timeout:  2 * time.Second,      // Graceful timeout before SIGKILL
-    DryRun:   false,
-})
-```
-
-### 3. Discover Processes (Inspect Ports)
-
-```go
-// Find processes listening on port 3000
-procs, err := killport.Find(3000)
-for _, p := range procs {
-    fmt.Printf("PID: %d | Name: %s | Cmd: %s | Address: %s\n",
-        p.PID, p.Name, p.CommandLine, p.Address)
-}
-
-// Check if a port is in use
-inUse, _ := killport.IsPortInUse(3000)
-if inUse {
-    fmt.Println("Port 3000 is occupied!")
-}
-
-// Find all listening processes across the entire machine
-allProcs, err := killport.FindAll()
 ```
 
 ---
 
-## 🏗️ Architecture
+## 🎛️ Presets Reference
 
-- **Linux**: Primary resolution scans `/proc/net/tcp{,6}` & `/proc/net/udp{,6}` mapped to `/proc/<pid>/fd/*` socket inodes. Automatic fallbacks to `ss`, `lsof`, and `fuser`.
-- **macOS**: Formatted `lsof -F pcn` and `netstat` lookup with process table inspection.
-- **Windows**: Win32 network table inspection via `netstat -ano` / `tasklist` and process termination via `taskkill /F /T` & `os.Process.Kill`.
+| Preset Name | Ports Targeted | Target Environment |
+|-------------|----------------|--------------------|
+| `web` / `dev` | `3000, 3001, 5173, 8000, 8080, 4200, 5000, 8888, 1234, 4321, 9000` | Common web dev servers |
+| `db` / `database` | `5432, 3306, 27017, 6379, 1433, 9200, 9300` | Common databases |
+| `next` / `react` / `remix` / `rails` | `3000` | Next.js, React, Remix, Rails |
+| `vite` / `svelte` | `5173` | Vite, SvelteKit |
+| `astro` | `4321` | Astro |
+| `vue` | `8080, 5173` | Vue.js |
+| `angular` | `4200` | Angular CLI |
+| `django` / `fastapi` | `8000` | Django, FastAPI |
+| `flask` | `5000` | Flask |
+| `postgres` / `postgresql` | `5432` | PostgreSQL |
+| `mysql` / `mariadb` | `3306` | MySQL, MariaDB |
+| `redis` | `6379` | Redis |
+| `mongo` / `mongodb` | `27017` | MongoDB |
 
 ---
 
 ## 🧪 Testing
 
-Run the test suite:
-
 ```bash
-go test -v ./...
+# Run unit & integration test suite
+go test -v -race ./...
 ```
 
 ---
 
 ## 📄 License
 
-MIT
+MIT © tyzrex

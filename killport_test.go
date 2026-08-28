@@ -238,3 +238,63 @@ func TestFindAll(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetsAndProtected(t *testing.T) {
+	// Test Presets
+	nextPorts, ok := killport.ResolvePreset("next")
+	if !ok || len(nextPorts) == 0 || nextPorts[0] != 3000 {
+		t.Fatalf("expected next preset to map to port 3000, got %v", nextPorts)
+	}
+
+	pgPorts, ok := killport.ResolvePreset("postgres")
+	if !ok || len(pgPorts) == 0 || pgPorts[0] != 5432 {
+		t.Fatalf("expected postgres preset to map to 5432, got %v", pgPorts)
+	}
+
+	// Test Protected Ports
+	desc, isProt := killport.IsProtectedPort(22)
+	if !isProt || desc == "" {
+		t.Fatalf("expected port 22 to be marked as protected")
+	}
+
+	_, isProt8080 := killport.IsProtectedPort(8080)
+	if isProt8080 {
+		t.Fatalf("port 8080 should not be protected")
+	}
+}
+
+func TestFindByName(t *testing.T) {
+	cmd, port := startChildListener(t, "tcp")
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	// Python3 was started
+	procs, err := killport.FindByName("python")
+	if err != nil {
+		t.Fatalf("FindByName returned error: %v", err)
+	}
+
+	found := false
+	for _, p := range procs {
+		if p.Port == port {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Logf("Process on port %d might not have 'python' in comm/exe on this system, continuing", port)
+	}
+
+	// Test GetProcessDetails
+	details, err := killport.GetProcessDetails(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("GetProcessDetails failed: %v", err)
+	}
+	if details.PID != cmd.Process.Pid {
+		t.Fatalf("expected PID %d, got %d", cmd.Process.Pid, details.PID)
+	}
+	t.Logf("Process %d details: Name=%s, Memory=%s, Exe=%s", details.PID, details.Name, details.MemoryHuman, details.Exe)
+}

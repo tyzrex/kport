@@ -37,32 +37,44 @@ func (p Protocol) Matches(target Protocol) bool {
 	return norm == target.Normalize()
 }
 
-// Process represents an active process bound to a network port.
+// Process represents an active process bound to a network port with extended details.
 type Process struct {
 	PID         int      `json:"pid"`
+	PPID        int      `json:"ppid,omitempty"`
 	Name        string   `json:"name"`
 	CommandLine string   `json:"command_line,omitempty"`
 	Exe         string   `json:"exe,omitempty"`
+	Cwd         string   `json:"cwd,omitempty"`
 	User        string   `json:"user,omitempty"`
 	Port        int      `json:"port"`
 	Protocol    Protocol `json:"protocol"`
 	Address     string   `json:"address"`
 	State       string   `json:"state,omitempty"`
+	MemoryRSS   uint64   `json:"memory_rss_bytes,omitempty"`
+	MemoryHuman string   `json:"memory_human,omitempty"`
+	ChildrenPIDs []int   `json:"children_pids,omitempty"`
 }
 
 // KillResult represents the result of attempting to kill a process on a port.
 type KillResult struct {
-	Port     int      `json:"port"`
-	Process  Process  `json:"process"`
-	Killed   bool     `json:"killed"`
-	Signal   string   `json:"signal,omitempty"`
-	Error    error    `json:"error,omitempty"`
+	Port         int      `json:"port"`
+	Process      Process  `json:"process"`
+	Killed       bool     `json:"killed"`
+	Signal       string   `json:"signal,omitempty"`
+	ChildrenKilled int    `json:"children_killed,omitempty"`
+	Error        error    `json:"error,omitempty"`
 }
 
 // FindOptions configures the process discovery behavior.
 type FindOptions struct {
 	// Protocol restricts discovery to TCP, UDP, or All (default: ProtocolAll).
 	Protocol Protocol `json:"protocol"`
+
+	// NameFilter restricts discovery to processes matching this name (case-insensitive substring).
+	NameFilter string `json:"name_filter,omitempty"`
+
+	// IncludeTree retrieves child PIDs and process tree information.
+	IncludeTree bool `json:"include_tree"`
 }
 
 // KillOptions configures the process killing behavior.
@@ -77,6 +89,15 @@ type KillOptions struct {
 	// Default is 1500ms if Force is false.
 	Timeout time.Duration `json:"timeout"`
 
+	// KillTree kills the process and all of its descendant child processes.
+	KillTree bool `json:"kill_tree"`
+
+	// WaitForFree polls until the port is completely released by the OS.
+	WaitForFree bool `json:"wait_for_free"`
+
+	// WaitTimeout is the maximum duration to wait for port release when WaitForFree is true (default: 5s).
+	WaitTimeout time.Duration `json:"wait_timeout"`
+
 	// DryRun finds the processes without sending any kill signals.
 	DryRun bool `json:"dry_run"`
 }
@@ -84,10 +105,13 @@ type KillOptions struct {
 // DefaultKillOptions returns standard options with graceful fallback and ProtocolAll.
 func DefaultKillOptions() KillOptions {
 	return KillOptions{
-		Protocol: ProtocolAll,
-		Force:    false,
-		Timeout:  1500 * time.Millisecond,
-		DryRun:   false,
+		Protocol:    ProtocolAll,
+		Force:       false,
+		Timeout:     1500 * time.Millisecond,
+		KillTree:    false,
+		WaitForFree: false,
+		WaitTimeout: 5 * time.Second,
+		DryRun:      false,
 	}
 }
 

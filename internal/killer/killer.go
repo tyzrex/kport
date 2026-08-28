@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/tyzrex/killport/internal/proc"
 	"github.com/tyzrex/killport/types"
 )
 
@@ -23,33 +24,47 @@ func ValidatePID(pid int) error {
 	return nil
 }
 
-// KillProcess terminates a process according to the provided options.
-func KillProcess(proc types.Process, opts types.KillOptions) types.KillResult {
+// KillProcess terminates a process according to the provided options, including child trees if requested.
+func KillProcess(p types.Process, opts types.KillOptions) types.KillResult {
 	if opts.DryRun {
 		return types.KillResult{
-			Port:    proc.Port,
-			Process: proc,
+			Port:    p.Port,
+			Process: p,
 			Killed:  false,
 			Signal:  "DRY-RUN",
 			Error:   nil,
 		}
 	}
 
-	if err := ValidatePID(proc.PID); err != nil {
+	if err := ValidatePID(p.PID); err != nil {
 		return types.KillResult{
-			Port:    proc.Port,
-			Process: proc,
+			Port:    p.Port,
+			Process: p,
 			Killed:  false,
 			Error:   err,
 		}
 	}
 
-	killed, sig, err := terminateProcess(proc.PID, opts)
+	var childrenKilled int
+	// Kill descendant process tree if requested
+	if opts.KillTree {
+		children := proc.FindProcessChildren(p.PID)
+		for _, childPID := range children {
+			if childPID > 1 && childPID != os.Getpid() {
+				if killed, _, _ := terminateProcess(childPID, opts); killed {
+					childrenKilled++
+				}
+			}
+		}
+	}
+
+	killed, sig, err := terminateProcess(p.PID, opts)
 	return types.KillResult{
-		Port:    proc.Port,
-		Process: proc,
-		Killed:  killed,
-		Signal:  sig,
-		Error:   err,
+		Port:           p.Port,
+		Process:        p,
+		Killed:         killed,
+		Signal:         sig,
+		ChildrenKilled: childrenKilled,
+		Error:          err,
 	}
 }

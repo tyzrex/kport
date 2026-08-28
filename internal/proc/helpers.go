@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,24 @@ func MatchPort(ports []int, targetPort int) bool {
 		if p == targetPort {
 			return true
 		}
+	}
+	return false
+}
+
+// MatchesNameFilter checks if process name, exe, or cmdline matches the filter string.
+func MatchesNameFilter(p types.Process, filter string) bool {
+	if filter == "" {
+		return true
+	}
+	f := strings.ToLower(filter)
+	if strings.Contains(strings.ToLower(p.Name), f) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(p.Exe), f) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(p.CommandLine), f) {
+		return true
 	}
 	return false
 }
@@ -43,7 +62,6 @@ func ParseHexIPv4(hexStr string) string {
 	if err != nil || len(b) != 4 {
 		return hexStr
 	}
-	// /proc/net/tcp stores IPv4 addresses in little-endian order
 	return fmt.Sprintf("%d.%d.%d.%d", b[3], b[2], b[1], b[0])
 }
 
@@ -56,7 +74,6 @@ func ParseHexIPv6(hexStr string) string {
 	if err != nil || len(b) != 16 {
 		return hexStr
 	}
-	// /proc/net/tcp6 stores 4 32-bit integers in little-endian order
 	var ipBytes [16]byte
 	for i := 0; i < 4; i++ {
 		offset := i * 4
@@ -69,10 +86,24 @@ func ParseHexIPv6(hexStr string) string {
 	return ip.String()
 }
 
-// GetProcessDetails tries to obtain process name, cmdline, exe and username from OS files or /proc.
-func GetProcessDetails(pid int) (name string, cmdline string, exe string, userName string) {
+// FormatBytes formats byte counts into human-readable representation (e.g. "24.5 MB").
+func FormatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := uint64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// GetProcessDetails populates rich process details from /proc (Linux) or OS introspection.
+func GetProcessDetails(pid int) (name string, cmdline string, exe string, userName string, ppid int, cwd string, rss uint64) {
 	if pid <= 0 {
-		return "", "", "", ""
+		return "", "", "", "", 0, "", 0
 	}
 
 	// 1. Comm (short name)
@@ -92,7 +123,6 @@ func GetProcessDetails(pid int) (name string, cmdline string, exe string, userNa
 		cmdline = strings.Join(validParts, " ")
 		if name == "" && len(validParts) > 0 {
 			name = validParts[0]
-			// extract basename
 			if idx := strings.LastIndex(name, "/"); idx != -1 {
 				name = name[idx+1:]
 			}
@@ -111,7 +141,12 @@ func GetProcessDetails(pid int) (name string, cmdline string, exe string, userNa
 		}
 	}
 
-	// 4. Status / UID
+	// 4. Cwd symlink
+	if cwdLink, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil {
+		cwd = cwdLink
+	}
+
+	// 5. Status: UID, PPid, VmRSS
 	if statusBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
 		lines := strings.Split(string(statusBytes), "\n")
 		for _, line := range lines {
@@ -125,12 +160,93 @@ func GetProcessDetails(pid int) (name string, cmdline string, exe string, userNa
 						userName = uidStr
 					}
 				}
-				break
+			} else if strings.HasPrefix(line, "PPid:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					ppid, _ = strconv.Atoi(fields[1])
+				}
+			} else if strings.HasPrefix(line, "VmRSS:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					kb, _ := strconv.ParseUint(fields[1], 10, 64)
+					rss = kb * 1024
+				}
 			}
 		}
 	}
 
-	return name, cmdline, exe, userName
+	return name, cmdline, exe, userName, ppid, cwd, rss
+}
+
+// FindProcessChildren returns all descendant child PIDs of a given parent PID.
+func FindProcessChildren(parentPID int) []int {
+	if parentPID <= 0 {
+		return nil
+	}
+
+	// 1. Try reading /proc/<pid>/task/<pid>/children (Linux direct kernel interface)
+	taskChildrenPath := fmt.Sprintf("/proc/%d/task/%d/children", parentPID, parentPID)
+	if data, err := os.ReadFile(taskChildrenPath); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 {
+			var directChildren []int
+			for _, f := range fields {
+				if cpid, err := strconv.Atoi(f); err == nil && cpid > 0 {
+					directChildren = append(directChildren, cpid)
+				}
+			}
+			var allChildren []int
+			for _, cpid := range directChildren {
+				allChildren = append(allChildren, cpid)
+				allChildren = append(allChildren, FindProcessChildren(cpid)...)
+			}
+			return allChildren
+		}
+	}
+
+	// 2. Fallback: scan /proc directory for PPID
+	procDir, err := os.Open("/proc")
+	if err != nil {
+		return nil
+	}
+	defer procDir.Close()
+
+	entries, err := procDir.Readdirnames(-1)
+	if err != nil {
+		return nil
+	}
+
+	var directChildren []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry)
+		if err != nil || pid <= 0 || pid == parentPID {
+			continue
+		}
+
+		statusPath := filepath.Join("/proc", entry, "status")
+		if statusBytes, err := os.ReadFile(statusPath); err == nil {
+			lines := strings.Split(string(statusBytes), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "PPid:") {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 {
+						if p, _ := strconv.Atoi(fields[1]); p == parentPID {
+							directChildren = append(directChildren, pid)
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	var allChildren []int
+	for _, cpid := range directChildren {
+		allChildren = append(allChildren, cpid)
+		allChildren = append(allChildren, FindProcessChildren(cpid)...)
+	}
+
+	return allChildren
 }
 
 // DeduplicateProcesses removes duplicate processes matching same PID, Port and Protocol.
