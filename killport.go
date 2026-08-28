@@ -261,3 +261,51 @@ func GetProcessDetails(pid int) (Process, error) {
 		ChildrenPIDs: children,
 	}, nil
 }
+
+// FindFreePort searches starting from startPort for the next available unused port.
+func FindFreePort(startPort int, protocol ...Protocol) (int, error) {
+	ports, err := FindFreePorts(startPort, 65535, 1, protocol...)
+	if err != nil || len(ports) == 0 {
+		return 0, fmt.Errorf("no free port found starting from %d", startPort)
+	}
+	return ports[0], nil
+}
+
+// FindFreePorts returns up to count available unused ports within the [startPort, endPort] range.
+func FindFreePorts(startPort, endPort, count int, protocol ...Protocol) ([]int, error) {
+	if startPort <= 0 {
+		startPort = 1024
+	}
+	if endPort > 65535 {
+		endPort = 65535
+	}
+	if count <= 0 {
+		count = 1
+	}
+
+	proto := ProtocolAll
+	if len(protocol) > 0 {
+		proto = protocol[0]
+	}
+
+	var freePorts []int
+	for p := startPort; p <= endPort; p++ {
+		inUse, err := IsPortInUse(p, proto)
+		if err == nil && !inUse {
+			freePorts = append(freePorts, p)
+			if len(freePorts) >= count {
+				break
+			}
+		}
+	}
+
+	if len(freePorts) == 0 {
+		return nil, fmt.Errorf("no free ports found in range %d-%d", startPort, endPort)
+	}
+	return freePorts, nil
+}
+
+// SuggestNextPort returns the closest available port to an occupied port.
+func SuggestNextPort(occupiedPort int, protocol ...Protocol) (int, error) {
+	return FindFreePort(occupiedPort+1, protocol...)
+}

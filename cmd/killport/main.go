@@ -16,9 +16,14 @@ import (
 
 	"github.com/tyzrex/killport"
 	"github.com/tyzrex/killport/internal/completion"
+	"github.com/tyzrex/killport/internal/config"
+	"github.com/tyzrex/killport/internal/detect"
+	"github.com/tyzrex/killport/internal/docker"
+	"github.com/tyzrex/killport/internal/notify"
+	"github.com/tyzrex/killport/internal/tui"
 )
 
-const version = "1.1.0"
+const version = "1.2.0"
 
 // Terminal colors
 var (
@@ -56,8 +61,24 @@ func disableColors() {
 	colorBold = ""
 }
 
+func isTerminal() bool {
+	inInfo, err1 := os.Stdin.Stat()
+	outInfo, err2 := os.Stdout.Stat()
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return (inInfo.Mode()&os.ModeCharDevice) != 0 && (outInfo.Mode()&os.ModeCharDevice) != 0
+}
+
 func main() {
 	initColors()
+	startTime := time.Now()
+
+	// Load user custom configuration (~/.config/killport/config.json)
+	userCfg := config.LoadConfig()
+	for k, v := range userCfg.Presets {
+		killport.Presets[k] = v
+	}
 
 	// Check completion subcommand before flag parsing
 	if len(os.Args) >= 2 && os.Args[1] == "completion" {
@@ -81,10 +102,13 @@ func main() {
 		verboseFlag     bool
 		quietFlag       bool
 		interactiveFlag bool
+		tuiFlag         bool
 		watchFlag       bool
 		waitFlag        bool
 		treeFlag        bool
 		inspectFlag     bool
+		notifyFlag      bool
+		benchFlag       bool
 		forceProtected  bool
 		noColorFlag     bool
 		versionFlag     bool
@@ -102,6 +126,8 @@ func main() {
 	flag.BoolVar(&dryRunFlag, "dry-run", false, "Dry run: preview processes without killing")
 	flag.BoolVar(&listFlag, "l", false, "List listening processes without killing")
 	flag.BoolVar(&listFlag, "list", false, "List listening processes without killing")
+	flag.BoolVar(&tuiFlag, "ui", false, "Launch interactive TUI process manager")
+	flag.BoolVar(&tuiFlag, "tui", false, "Launch interactive TUI process manager")
 	flag.BoolVar(&jsonFlag, "j", false, "Output results in JSON format")
 	flag.BoolVar(&jsonFlag, "json", false, "Output results in JSON format")
 	flag.BoolVar(&verboseFlag, "v", false, "Verbose output showing command lines and paths")
@@ -117,6 +143,9 @@ func main() {
 	flag.BoolVar(&treeFlag, "T", false, "Kill process tree (all descendant child processes)")
 	flag.BoolVar(&treeFlag, "tree", false, "Kill process tree (all descendant child processes)")
 	flag.BoolVar(&inspectFlag, "inspect", false, "Show detailed process inspection (Memory, CWD, PPID, Tree)")
+	flag.BoolVar(&notifyFlag, "N", false, "Send native desktop notification on kill")
+	flag.BoolVar(&notifyFlag, "notify", false, "Send native desktop notification on kill")
+	flag.BoolVar(&benchFlag, "bench", false, "Show execution latency benchmark")
 	flag.BoolVar(&forceProtected, "force-protected", false, "Allow killing critical protected system ports (e.g. SSH 22)")
 	flag.BoolVar(&noColorFlag, "no-color", false, "Disable color output")
 	flag.BoolVar(&versionFlag, "version", false, "Print version")
@@ -154,6 +183,32 @@ func main() {
 	}
 
 	args := flag.Args()
+	protocol := killport.Protocol(protoStr).Normalize()
+
+	// Special Subcommands: 'free' / 'suggest'
+	if len(args) >= 1 && (args[0] == "free" || args[0] == "suggest") {
+		runFreeCommand(args, protocol)
+		return
+	}
+
+	// 1. Interactive TUI Mode: if `kport` run without args in interactive terminal, or if -ui / --tui flag
+	if (len(args) == 0 && isTerminal() && !listFlag && !jsonFlag && !quietFlag) || tuiFlag {
+		runTUIMode(protocol, nameFilter)
+		return
+	}
+
+	// 2. Project & CWD auto-detection (e.g. `kport .` or `kport auto` or `kport cwd` / `kport here`)
+	if len(args) == 1 && (args[0] == "." || args[0] == "auto" || args[0] == "cwd" || args[0] == "here") {
+		runAutoProjectKill(protocol, forceFlag, timeout, treeFlag, waitFlag, dryRunFlag, quietFlag, jsonFlag)
+		return
+	}
+
+	// 3. List Mode
+	if listFlag || (len(args) == 0 && !quietFlag) {
+		ports, _ := parsePortArgs(args)
+		runListMode(ports, protocol, nameFilter, jsonFlag, verboseFlag || inspectFlag)
+		return
+	}
 
 	// Parse ports, ranges, and presets
 	ports, err := parsePortArgs(args)
@@ -162,20 +217,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	protocol := killport.Protocol(protoStr).Normalize()
-
-	// 1. List Mode
-	if listFlag || (len(ports) == 0 && len(args) == 0 && !quietFlag) {
-		runListMode(ports, protocol, nameFilter, jsonFlag, verboseFlag || inspectFlag)
-		return
-	}
-
 	if len(ports) == 0 {
 		printCustomHelp()
 		os.Exit(1)
 	}
 
-	// 2. Protected Ports check
+	// Protected Ports check
 	if !forceProtected && !forceFlag {
 		for _, port := range ports {
 			if desc, isProt := killport.IsProtectedPort(port); isProt {
@@ -187,13 +234,13 @@ func main() {
 		}
 	}
 
-	// 3. Watch Mode
+	// Watch Mode
 	if watchFlag {
-		runWatchMode(ports, protocol, forceFlag, timeout, treeFlag, watchInterval, quietFlag, jsonFlag)
+		runWatchMode(ports, protocol, forceFlag, timeout, treeFlag, watchInterval, quietFlag, jsonFlag, notifyFlag)
 		return
 	}
 
-	// 4. Discover processes
+	// Discover processes
 	findOpts := killport.FindOptions{
 		Protocol:    protocol,
 		NameFilter:  nameFilter,
@@ -207,6 +254,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Check Docker container mappings for docker-proxy processes
+	for i := range procs {
+		if strings.Contains(procs[i].Name, "docker") || strings.Contains(procs[i].CommandLine, "docker-proxy") {
+			if cInfo, ok := docker.GetContainerByPort(procs[i].Port); ok {
+				procs[i].Name = fmt.Sprintf("docker:%s", cInfo.Name)
+			}
+		}
+	}
+
 	if len(procs) == 0 {
 		if jsonFlag {
 			fmt.Println("[]")
@@ -216,7 +272,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 5. Dry-run or Inspect mode
+	// Dry-run or Inspect mode
 	if dryRunFlag || inspectFlag {
 		if jsonFlag {
 			data, _ := json.MarshalIndent(procs, "", "  ")
@@ -236,7 +292,7 @@ func main() {
 		}
 	}
 
-	// 6. Kill execution
+	// Kill execution
 	killOpts := killport.KillOptions{
 		Protocol:    protocol,
 		Force:       forceFlag,
@@ -296,9 +352,13 @@ func main() {
 					colorRed, p.Name, p.PID, p.Port, res.Error, colorReset)
 			}
 		}
+
+		if notifyFlag && res.Killed {
+			notify.SendNotification("killport", fmt.Sprintf("Killed '%s' (PID %d) on port %d", p.Name, p.PID, p.Port))
+		}
 	}
 
-	// 7. If -W / --wait specified, ensure ports are free
+	// Verify wait release
 	if waitFlag && !quietFlag && !jsonFlag {
 		fmt.Printf("%s⏳ Verifying port(s) are released by the OS...%s\n", colorGray, colorReset)
 		for _, port := range ports {
@@ -306,6 +366,10 @@ func main() {
 				fmt.Printf("%s✓ Port %d is fully free!%s\n", colorGreen, port, colorReset)
 			}
 		}
+	}
+
+	if benchFlag && !quietFlag && !jsonFlag {
+		fmt.Printf("%s⚡ Completed in %v%s\n", colorCyan, time.Since(startTime).Round(time.Microsecond), colorReset)
 	}
 
 	if jsonFlag {
@@ -345,7 +409,175 @@ func main() {
 	}
 }
 
-func runWatchMode(ports []int, proto killport.Protocol, force bool, timeout time.Duration, tree bool, interval time.Duration, quiet bool, jsonOut bool) {
+func runTUIMode(proto killport.Protocol, nameFilter string) {
+	procs, err := killport.FindAll(killport.FindOptions{
+		Protocol:   proto,
+		NameFilter: nameFilter,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+		return
+	}
+
+	if len(procs) == 0 {
+		fmt.Printf("%sℹ No active listening ports found on the system.%s\n", colorCyan, colorReset)
+		return
+	}
+
+	toKill, force, canceled := tui.RunTUI(procs)
+	if canceled || len(toKill) == 0 {
+		return
+	}
+
+	opts := killport.KillOptions{
+		Force:   force,
+		Timeout: 1500 * time.Millisecond,
+	}
+
+	fmt.Printf("\n%s==> Terminating %d process(es)...%s\n\n", colorBold, len(toKill), colorReset)
+	for _, p := range toKill {
+		res := killport.KillProcess(p, opts)
+		if res.Killed {
+			sig := res.Signal
+			if sig == "" {
+				sig = "OK"
+			}
+			fmt.Printf("%s✓ Killed '%s' (PID %d) (%s) on port %d [%s]%s\n",
+				colorGreen, p.Name, p.PID, sig, p.Port, strings.ToUpper(string(p.Protocol)), colorReset)
+		} else {
+			fmt.Printf("%s✗ Failed to kill '%s' (PID %d) on port %d: %v%s\n",
+				colorRed, p.Name, p.PID, p.Port, res.Error, colorReset)
+		}
+	}
+}
+
+func runAutoProjectKill(proto killport.Protocol, force bool, timeout time.Duration, tree bool, wait bool, dryRun bool, quiet bool, jsonOut bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError getting current directory: %v%s\n", colorRed, err, colorReset)
+		os.Exit(1)
+	}
+
+	allProcs, err := killport.FindAll(killport.FindOptions{Protocol: proto, IncludeTree: tree})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError discovering processes: %v%s\n", colorRed, err, colorReset)
+		os.Exit(1)
+	}
+
+	// 1. Look for processes whose CWD matches current directory
+	cwdProcs := detect.FindProcessesByCWD(cwd, allProcs)
+
+	// 2. Look for project framework configs (e.g. Next.js, Vite, docker-compose)
+	var suspectedPorts []int
+	var frameworkName string
+	if pInfo, ok := detect.DetectProject(cwd); ok {
+		suspectedPorts = pInfo.Ports
+		frameworkName = pInfo.Framework
+	}
+
+	targetProcsMap := make(map[int]killport.Process)
+	for _, p := range cwdProcs {
+		targetProcsMap[p.PID] = p
+	}
+
+	for _, p := range allProcs {
+		for _, sp := range suspectedPorts {
+			if p.Port == sp {
+				targetProcsMap[p.PID] = p
+			}
+		}
+	}
+
+	var targetProcs []killport.Process
+	for _, p := range targetProcsMap {
+		targetProcs = append(targetProcs, p)
+	}
+
+	if len(targetProcs) == 0 {
+		if !quiet && !jsonOut {
+			fmt.Printf("%sℹ No running dev servers or ports found for project in %s%s\n", colorCyan, cwd, colorReset)
+			if frameworkName != "" {
+				fmt.Printf("  (Detected %s on port(s) %v, but they are not currently running)\n", frameworkName, suspectedPorts)
+			}
+		}
+		return
+	}
+
+	if !quiet && !jsonOut {
+		detectedMsg := ""
+		if frameworkName != "" {
+			detectedMsg = fmt.Sprintf(" [%s Project]", frameworkName)
+		}
+		fmt.Printf("%s⚡ Detected %d process(es) for current directory%s:%s\n\n",
+			colorBold+colorCyan, len(targetProcs), detectedMsg, colorReset)
+		for _, p := range targetProcs {
+			printProcessLine(p, true)
+		}
+		fmt.Println()
+	}
+
+	if dryRun {
+		return
+	}
+
+	killOpts := killport.KillOptions{
+		Protocol:    proto,
+		Force:       force,
+		Timeout:     timeout,
+		KillTree:    tree,
+		WaitForFree: wait,
+	}
+
+	for _, p := range targetProcs {
+		res := killport.KillProcess(p, killOpts)
+		if !quiet && !jsonOut {
+			if res.Killed {
+				fmt.Printf("%s✓ Killed '%s' (PID %d) on port %d%s\n", colorGreen, p.Name, p.PID, p.Port, colorReset)
+			} else {
+				fmt.Printf("%s✗ Failed to kill PID %d on port %d: %v%s\n", colorRed, p.PID, p.Port, res.Error, colorReset)
+			}
+		}
+	}
+}
+
+func runFreeCommand(args []string, proto killport.Protocol) {
+	startPort := 3000
+	endPort := 4000
+	count := 5
+
+	if len(args) >= 2 {
+		arg := strings.TrimPrefix(args[1], ":")
+		if strings.Contains(arg, "-") {
+			parts := strings.Split(arg, "-")
+			if len(parts) == 2 {
+				s, err1 := strconv.Atoi(parts[0])
+				e, err2 := strconv.Atoi(parts[1])
+				if err1 == nil && err2 == nil {
+					startPort = s
+					endPort = e
+					count = endPort - startPort + 1
+				}
+			}
+		} else if p, err := strconv.Atoi(arg); err == nil {
+			startPort = p
+			endPort = p + 50
+			count = 5
+		}
+	}
+
+	ports, err := killport.FindFreePorts(startPort, endPort, count, proto)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+		os.Exit(1)
+	}
+
+	fmt.Printf("%s✓ Available Free Port(s):%s\n", colorGreen+colorBold, colorReset)
+	for _, p := range ports {
+		fmt.Printf("  • %sPort %d%s [FREE]\n", colorCyan, p, colorReset)
+	}
+}
+
+func runWatchMode(ports []int, proto killport.Protocol, force bool, timeout time.Duration, tree bool, interval time.Duration, quiet bool, jsonOut bool, notifyUser bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -379,6 +611,9 @@ func runWatchMode(ports []int, proto killport.Protocol, force bool, timeout time
 			data, _ := json.Marshal(res)
 			fmt.Println(string(data))
 		}
+		if notifyUser && res.Killed {
+			notify.SendNotification("killport", fmt.Sprintf("Auto-killed '%s' (PID %d) on port %d", res.Process.Name, res.Process.PID, res.Port))
+		}
 	})
 }
 
@@ -401,6 +636,14 @@ func runListMode(ports []int, proto killport.Protocol, nameFilter string, jsonOu
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%sError listing ports: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
+	}
+
+	for i := range procs {
+		if strings.Contains(procs[i].Name, "docker") || strings.Contains(procs[i].CommandLine, "docker-proxy") {
+			if cInfo, ok := docker.GetContainerByPort(procs[i].Port); ok {
+				procs[i].Name = fmt.Sprintf("docker:%s", cInfo.Name)
+			}
+		}
 	}
 
 	sort.Slice(procs, func(i, j int) bool {
@@ -472,6 +715,21 @@ func runListMode(ports []int, proto killport.Protocol, nameFilter string, jsonOu
 	}
 }
 
+func printProcessLine(p killport.Process, verbose bool) {
+	fmt.Printf("  • %sPort %d%s [%s]: PID %s%d%s (%s)\n",
+		colorCyan, p.Port, colorReset, strings.ToUpper(string(p.Protocol)),
+		colorBold, p.PID, colorReset, p.Name)
+	if p.Address != "" {
+		fmt.Printf("    Address: %s\n", p.Address)
+	}
+	if p.Cwd != "" {
+		fmt.Printf("    CWD:     %s\n", p.Cwd)
+	}
+	if verbose && p.CommandLine != "" {
+		fmt.Printf("    Command: %s\n", p.CommandLine)
+	}
+}
+
 func printProcessInspection(p killport.Process, verbose bool) {
 	fmt.Printf("  • %sPort %d%s [%s]: PID %s%d%s (%s)\n",
 		colorCyan, p.Port, colorReset, strings.ToUpper(string(p.Protocol)),
@@ -520,7 +778,6 @@ func parsePortArgs(args []string) ([]int, error) {
 	for _, arg := range args {
 		arg = strings.TrimPrefix(arg, ":")
 
-		// Check if argument matches a preset name (e.g. "next", "vite", "dev", "postgres")
 		if presetPorts, ok := killport.ResolvePreset(arg); ok {
 			for _, p := range presetPorts {
 				if !seen[p] {
@@ -537,7 +794,6 @@ func parsePortArgs(args []string) ([]int, error) {
 				continue
 			}
 
-			// Preset inside comma list
 			if presetPorts, ok := killport.ResolvePreset(part); ok {
 				for _, p := range presetPorts {
 					if !seen[p] {
@@ -548,7 +804,6 @@ func parsePortArgs(args []string) ([]int, error) {
 				continue
 			}
 
-			// Range format 3000-3005
 			if strings.Contains(part, "-") {
 				rangeParts := strings.Split(part, "-")
 				if len(rangeParts) != 2 {
@@ -594,8 +849,14 @@ func printCustomHelp() {
 	help := `killport - Lightning-fast utility & library to kill processes on ports
 
 USAGE:
-    killport [OPTIONS] <PORTS | PRESETS...>
-    kport [OPTIONS] <PORTS | PRESETS...>
+    killport [OPTIONS] <PORTS | PRESETS | COMMAND...>
+    kport [OPTIONS] <PORTS | PRESETS | COMMAND...>
+
+COMMANDS:
+    (no args)                      Launch interactive TUI dashboard (when run in a terminal)
+    killport . / auto / here       Auto-detect and kill dev servers for the current project/CWD
+    killport free <port|range>     Find and suggest next available free ports
+    killport completion <shell>    Generate autocompletion script (bash, zsh, fish, powershell)
 
 EXAMPLES:
     killport 3000                  Kill process listening on port 3000
@@ -614,11 +875,12 @@ EXAMPLES:
     killport -w 3000               Watch mode: continuously kill anything binding to 3000
     killport -d 3000               Dry-run (preview processes without killing)
     killport --inspect 3000        Inspect detailed process info (Memory, CWD, Tree)
+    killport --ui                  Launch interactive TUI process manager
     killport -l                    List all listening ports and processes
     killport -l -n node            List only processes matching "node"
     killport -i 3000 8080          Interactive confirmation before killing
     killport -j 3000               Output result as JSON
-    killport completion bash       Generate shell autocompletion script (bash/zsh/fish)
+    killport free 3000             Suggest next available free port
 
 PRESETS:
     web, dev, db, next, react, remix, vite, astro, svelte, vue, angular,
@@ -635,8 +897,11 @@ OPTIONS:
     -p, --protocol <proto>         Protocol filter: tcp, udp, all (default: all)
     -d, --dry-run                  Preview processes without killing
         --inspect                  Show detailed process inspection (Memory, CWD, Tree)
+        --ui, --tui                Launch interactive TUI manager
     -l, --list                     List listening processes
     -i, --interactive              Prompt before killing each process
+    -N, --notify                   Send native OS desktop notification on kill
+        --bench                    Show execution latency benchmark
     -j, --json                     Output result in JSON format
     -v, --verbose                  Show full command lines and details
     -q, --quiet                    Suppress output

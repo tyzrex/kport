@@ -298,3 +298,29 @@ func TestFindByName(t *testing.T) {
 	}
 	t.Logf("Process %d details: Name=%s, Memory=%s, Exe=%s", details.PID, details.Name, details.MemoryHuman, details.Exe)
 }
+
+func TestFreePortsFinder(t *testing.T) {
+	freePort, err := killport.FindFreePort(40000)
+	if err != nil {
+		t.Fatalf("FindFreePort returned error: %v", err)
+	}
+	if freePort < 40000 {
+		t.Fatalf("expected free port >= 40000, got %d", freePort)
+	}
+
+	freePorts, err := killport.FindFreePorts(45000, 45010, 3)
+	if err != nil {
+		t.Fatalf("FindFreePorts returned error: %v", err)
+	}
+	if len(freePorts) != 3 {
+		t.Fatalf("expected 3 free ports, got %d", len(freePorts))
+	}
+
+	suggested, err := killport.SuggestNextPort(3000)
+	if err != nil {
+		t.Fatalf("SuggestNextPort returned error: %v", err)
+	}
+	if suggested <= 3000 {
+		t.Fatalf("expected suggested port > 3000, got %d", suggested)
+	}
+}
