@@ -1,10 +1,11 @@
 .PHONY: build install test clean release-local
 
-VERSION ?= 1.1.0
+VERSION ?= 1.3.0
 LDFLAGS = -ldflags="-s -w -X main.version=$(VERSION)"
 
 build:
 	go build $(LDFLAGS) -o bin/killport ./cmd/killport
+	go build $(LDFLAGS) -o bin/kport ./cmd/kport
 
 install:
 	go build $(LDFLAGS) -o $(HOME)/.local/bin/killport ./cmd/killport

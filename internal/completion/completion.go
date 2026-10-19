@@ -27,10 +27,9 @@ func GenerateCompletion(shell string, w io.Writer) error {
 
 const bashCompletion = `# bash completion for killport
 _killport_complete() {
-    local cur prev words cword
-    _init_completion || return
+    local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    local flags="-f --force -g --graceful -t --timeout -p --protocol -d --dry-run -l --list -i --interactive -j --json -v --verbose -q --quiet -w --watch -W --wait -T --tree --inspect --no-color --version -h --help completion"
+    local flags="-f --force -g --graceful -t --timeout -p --protocol -d --dry-run -l --list -i --interactive -j --json -v --verbose -q --quiet -w --watch -W --wait -T --tree --inspect --ui --observe --user --project --pid --exposure --sort --wait-timeout --interval --force-protected --notify --bench --no-color --version -h --help completion free suggest"
     local presets="web dev db database next nextjs react remix vite astro svelte vue angular django fastapi flask rails redis postgres postgresql mysql mariadb mongo mongodb"
 
     if [[ "$cur" == -* ]]; then
@@ -50,8 +49,8 @@ _killport_complete() {
 
     # Suggest active listening ports and presets
     local ports
-    if command -v killport >/dev/null 2>&1; then
-        ports=$(killport -l --no-color 2>/dev/null | awk 'NR>2 {print $1}' | sort -u)
+    if command -v "${COMP_WORDS[0]}" >/dev/null 2>&1; then
+        ports=$("${COMP_WORDS[0]}" -l --no-color 2>/dev/null | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1}' | sort -u)
     fi
 
     COMPREPLY=( $(compgen -W "$ports $presets" -- "$cur") )
@@ -80,6 +79,18 @@ _killport() {
         '(-W --wait)'{-W,--wait}'[Wait until port is completely released before exit]'
         '(-T --tree)'{-T,--tree}'[Kill process tree (descendant children)]'
         '--inspect[Show detailed memory, CWD, and tree info]'
+        '--ui[Open persistent dashboard]'
+        '--observe[Observe occupancy changes without stopping]'
+        '--user[Filter by user]:user:'
+        '--project[Filter by project directory]:directory:_directories'
+        '--pid[Pin to current process identity]:pid:'
+        '--exposure[Filter binding]:exposure:(all localhost public interface)'
+        '--sort[Sort processes]:sort:(port memory project user name protocol)'
+        '--wait-timeout[Port release timeout]:duration:'
+        '--interval[Watch or refresh interval]:duration:'
+        '--force-protected[Explicitly allow protected ports]'
+        '--notify[Send desktop notifications]'
+        '--bench[Show execution duration]'
         '--no-color[Disable colored output]'
         '(-h --help)'{-h,--help}'[Show help message]'
         '--version[Print version]'
@@ -125,7 +136,7 @@ _killport() {
     esac
 }
 
-_killport "$@"
+compdef _killport killport kport
 `
 
 const fishCompletion = `# fish completion for killport
@@ -142,7 +153,19 @@ complete -c killport -s q -l quiet -d "Quiet mode"
 complete -c killport -s w -l watch -d "Watch mode"
 complete -c killport -s W -l wait -d "Wait for release"
 complete -c killport -s T -l tree -d "Kill process tree"
-complete -c killport -l inspect -d "Inspect process details"
+complete -c killport -l inspect -d "Inspect without stopping"
+complete -c killport -l ui -d "Persistent dashboard"
+complete -c killport -l observe -d "Observe without stopping"
+complete -c killport -l user -r -d "Filter by user"
+complete -c killport -l project -r -a '(__fish_complete_directories)' -d "Project directory"
+complete -c killport -l pid -r -d "Pin process identity"
+complete -c killport -l exposure -r -a "all localhost public interface"
+complete -c killport -l sort -r -a "port memory project user name protocol"
+complete -c killport -l wait-timeout -r -d "Port release timeout"
+complete -c killport -l interval -r -d "Refresh interval"
+complete -c killport -l force-protected -d "Allow protected ports"
+complete -c killport -l notify -d "Desktop notification"
+complete -c killport -l bench -d "Execution duration"
 complete -c killport -l no-color -d "Disable color output"
 complete -c killport -s h -l help -d "Show help"
 complete -c killport -l version -d "Print version"
@@ -157,7 +180,7 @@ const powershellCompletion = `Register-ArgumentCompleter -Native -CommandName ki
         '-p', '--protocol', '-d', '--dry-run', '-l', '--list',
         '-i', '--interactive', '-j', '--json', '-v', '--verbose',
         '-q', '--quiet', '-w', '--watch', '-W', '--wait', '-T', '--tree',
-        '--inspect', '--no-color', '--version', '-h', '--help',
+        '--inspect', '--ui', '--observe', '--user', '--project', '--pid', '--exposure', '--sort', '--wait-timeout', '--interval', '--force-protected', '--notify', '--bench', '--no-color', '--version', '-h', '--help',
         'web', 'dev', 'db', 'next', 'react', 'vite', 'redis', 'postgres', 'mysql'
     )
     $options | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {

@@ -3,7 +3,6 @@
 package proc
 
 import (
-	"bytes"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -56,68 +55,52 @@ func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, erro
 
 func parseDarwinLsofOutput(out []byte, defaultPort int, proto types.Protocol) []types.Process {
 	var results []types.Process
-	lines := strings.Split(string(out), "\n")
-
-	var currentPID int
-	var currentName string
-	var currentAddr string
-
-	flush := func() {
-		if currentPID > 0 {
-			port := defaultPort
-			if port == 0 && currentAddr != "" {
-				if idx := strings.LastIndex(currentAddr, ":"); idx != -1 {
-					if p, err := strconv.Atoi(currentAddr[idx+1:]); err == nil {
-						port = p
-					}
-				}
-			}
-
-			cmdline := getDarwinCmdline(currentPID)
-
-			results = append(results, types.Process{
-				PID:         currentPID,
-				Name:        currentName,
-				CommandLine: cmdline,
-				Port:        port,
-				Protocol:    proto,
-				Address:     currentAddr,
-				State:       "LISTEN",
-			})
-			currentPID = 0
-			currentName = ""
-			currentAddr = ""
-		}
-	}
-
-	for _, line := range lines {
-		if len(line) == 0 {
+	var pid int
+	var name string
+	cache := map[int]types.Process{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 2 {
 			continue
 		}
-		prefix := line[0]
-		val := line[1:]
-
-		switch prefix {
+		switch line[0] {
 		case 'p':
-			flush()
-			currentPID, _ = strconv.Atoi(val)
+			pid, _ = strconv.Atoi(line[1:])
 		case 'c':
-			currentName = val
+			name = line[1:]
 		case 'n':
-			currentAddr = val
+			addr := line[1:]
+			if strings.Contains(addr, "->") {
+				continue
+			}
+			i := strings.LastIndex(addr, ":")
+			if i < 0 {
+				continue
+			}
+			port, e := strconv.Atoi(addr[i+1:])
+			if e != nil || port == 0 {
+				continue
+			}
+			if defaultPort != 0 && port != defaultPort {
+				continue
+			}
+			p, ok := cache[pid]
+			if !ok {
+				n, cmd, exe, user, ppid, cwd, rss := GetProcessDetails(pid)
+				if n == "" {
+					n = name
+				}
+				p = types.Process{PID: pid, Name: n, CommandLine: cmd, Exe: exe, User: user, PPID: ppid, Cwd: cwd, MemoryRSS: rss, MemoryHuman: FormatBytes(rss)}
+				cache[pid] = p
+			}
+			p.Port = port
+			p.Protocol = proto
+			p.Address = addr
+			p.State = "LISTEN"
+			if proto == types.ProtocolUDP {
+				p.State = "BOUND"
+			}
+			results = append(results, p)
 		}
 	}
-	flush()
-
 	return results
-}
-
-func getDarwinCmdline(pid int) string {
-	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
-		return strings.TrimSpace(out.String())
-	}
-	return ""
 }

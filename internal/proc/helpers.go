@@ -101,7 +101,7 @@ func FormatBytes(bytes uint64) string {
 }
 
 // GetProcessDetails populates rich process details from /proc (Linux) or OS introspection.
-func GetProcessDetails(pid int) (name string, cmdline string, exe string, userName string, ppid int, cwd string, rss uint64) {
+func getProcDetails(pid int) (name string, cmdline string, exe string, userName string, ppid int, cwd string, rss uint64) {
 	if pid <= 0 {
 		return "", "", "", "", 0, "", 0
 	}
@@ -179,7 +179,7 @@ func GetProcessDetails(pid int) (name string, cmdline string, exe string, userNa
 }
 
 // FindProcessChildren returns all descendant child PIDs of a given parent PID.
-func FindProcessChildren(parentPID int) []int {
+func findProcChildren(parentPID int) []int {
 	if parentPID <= 0 {
 		return nil
 	}
@@ -255,12 +255,13 @@ func DeduplicateProcesses(procs []types.Process) []types.Process {
 		pid      int
 		port     int
 		protocol types.Protocol
+		address  string
 	}
 	seen := make(map[key]bool)
 	var unique []types.Process
 
 	for _, p := range procs {
-		k := key{pid: p.PID, port: p.Port, protocol: p.Protocol}
+		k := key{pid: p.PID, port: p.Port, protocol: p.Protocol, address: p.Address}
 		if !seen[k] {
 			seen[k] = true
 			unique = append(unique, p)

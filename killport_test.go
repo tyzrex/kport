@@ -1,55 +1,106 @@
 package killport_test
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/tyzrex/kport"
 )
 
-// Helper to spawn a dummy listener in a background subprocess
+// TestListenerProcess is a portable listener subprocess, requiring no Python.
+func TestListenerProcess(t *testing.T) {
+	if os.Getenv("KPORT_TEST_LISTENER") != "1" {
+		return
+	}
+	proto := os.Getenv("KPORT_TEST_PROTOCOL")
+	var closer interface{ Close() error }
+	var addr net.Addr
+	var err error
+	if proto == "udp" {
+		var c net.PacketConn
+		c, err = net.ListenPacket("udp", "127.0.0.1:0")
+		if err == nil {
+			closer = c
+			addr = c.LocalAddr()
+		}
+	} else {
+		var c net.Listener
+		c, err = net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			closer = c
+			addr = c.Addr()
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	defer closer.Close()
+	fmt.Println(addr.String())
+	if pc, ok := closer.(net.PacketConn); ok {
+		buf := make([]byte, 1024)
+		for {
+			if _, _, e := pc.ReadFrom(buf); e != nil {
+				return
+			}
+		}
+	}
+	ln := closer.(net.Listener)
+	for {
+		c, e := ln.Accept()
+		if e != nil {
+			return
+		}
+		c.Close()
+	}
+}
 func startChildListener(t *testing.T, proto string) (*exec.Cmd, int) {
-	// Find a free port
-	var freePort int
-	if proto == "udp" {
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-		if err != nil {
-			t.Fatalf("failed to get free UDP port: %v", err)
+	t.Helper()
+	exe, e := os.Executable()
+	if e != nil {
+		t.Fatal(e)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestListenerProcess$")
+	cmd.Env = append(os.Environ(), "KPORT_TEST_LISTENER=1", "KPORT_TEST_PROTOCOL="+proto)
+	pipe, e := cmd.StdoutPipe()
+	if e != nil {
+		t.Fatal(e)
+	}
+	cmd.Stderr = os.Stderr
+	if e = cmd.Start(); e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	ready := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(pipe)
+		if scanner.Scan() {
+			ready <- scanner.Text()
+		} else {
+			ready <- ""
 		}
-		freePort = conn.LocalAddr().(*net.UDPAddr).Port
-		conn.Close()
-	} else {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("failed to get free TCP port: %v", err)
+	}()
+	select {
+	case addr := <-ready:
+		_, p, e := net.SplitHostPort(addr)
+		if e != nil {
+			t.Fatal(e)
 		}
-		freePort = ln.Addr().(*net.TCPAddr).Port
-		ln.Close()
+		port, e := strconv.Atoi(p)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return cmd, port
+	case <-time.After(10 * time.Second):
+		t.Fatal("listener did not start")
 	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	var cmd *exec.Cmd
-	if proto == "udp" {
-		script := fmt.Sprintf("import socket, time; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('127.0.0.1', %d)); time.sleep(10)", freePort)
-		cmd = exec.Command("python3", "-c", script)
-	} else {
-		script := fmt.Sprintf("import socket, time; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', %d)); s.listen(1); time.sleep(10)", freePort)
-		cmd = exec.Command("python3", "-c", script)
-	}
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start listener process: %v", err)
-	}
-
-	// Give the process time to bind
-	time.Sleep(200 * time.Millisecond)
-
-	return cmd, freePort
+	return nil, 0
 }
 
 func TestFindAndKillPortTCP(t *testing.T) {
@@ -322,5 +373,32 @@ func TestFreePortsFinder(t *testing.T) {
 	}
 	if suggested <= 3000 {
 		t.Fatalf("expected suggested port > 3000, got %d", suggested)
+	}
+}
+
+func TestWaitForFreeTimeoutAndDryRun(t *testing.T) {
+	cmd, port := startChildListener(t, "tcp")
+	if e := killport.WaitForFree(port, 30*time.Millisecond, killport.ProtocolTCP); e == nil {
+		t.Fatal("occupied port reported free")
+	}
+	if _, e := killport.KillPort(port, killport.KillOptions{DryRun: true, WaitForFree: true, WaitTimeout: time.Millisecond}); e != nil {
+		t.Fatalf("dry run should not wait: %v", e)
+	}
+	details, e := killport.GetProcessDetails(cmd.Process.Pid)
+	if e != nil {
+		t.Fatal(e)
+	}
+	details.StartID = "stale-identity"
+	result := killport.KillProcess(details)
+	if result.Error == nil || result.Killed {
+		t.Fatal("stale identity accepted")
+	}
+	c, e := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	if e != nil {
+		t.Fatal("dry run or stale snapshot killed listener", e)
+	}
+	c.Close()
+	if _, e = killport.KillPort(0, killport.DefaultKillOptions()); e == nil {
+		t.Fatal("invalid kill port accepted")
 	}
 }

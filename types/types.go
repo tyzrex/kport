@@ -39,30 +39,34 @@ func (p Protocol) Matches(target Protocol) bool {
 
 // Process represents an active process bound to a network port with extended details.
 type Process struct {
-	PID         int      `json:"pid"`
-	PPID        int      `json:"ppid,omitempty"`
-	Name        string   `json:"name"`
-	CommandLine string   `json:"command_line,omitempty"`
-	Exe         string   `json:"exe,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	User        string   `json:"user,omitempty"`
-	Port        int      `json:"port"`
-	Protocol    Protocol `json:"protocol"`
-	Address     string   `json:"address"`
-	State       string   `json:"state,omitempty"`
-	MemoryRSS   uint64   `json:"memory_rss_bytes,omitempty"`
-	MemoryHuman string   `json:"memory_human,omitempty"`
-	ChildrenPIDs []int   `json:"children_pids,omitempty"`
+	StartID       string   `json:"start_id,omitempty"`
+	ContainerID   string   `json:"container_id,omitempty"`
+	ContainerName string   `json:"container_name,omitempty"`
+	MatchReason   string   `json:"match_reason,omitempty"`
+	PID           int      `json:"pid"`
+	PPID          int      `json:"ppid,omitempty"`
+	Name          string   `json:"name"`
+	CommandLine   string   `json:"command_line,omitempty"`
+	Exe           string   `json:"exe,omitempty"`
+	Cwd           string   `json:"cwd,omitempty"`
+	User          string   `json:"user,omitempty"`
+	Port          int      `json:"port"`
+	Protocol      Protocol `json:"protocol"`
+	Address       string   `json:"address"`
+	State         string   `json:"state,omitempty"`
+	MemoryRSS     uint64   `json:"memory_rss_bytes,omitempty"`
+	MemoryHuman   string   `json:"memory_human,omitempty"`
+	ChildrenPIDs  []int    `json:"children_pids,omitempty"`
 }
 
 // KillResult represents the result of attempting to kill a process on a port.
 type KillResult struct {
-	Port         int      `json:"port"`
-	Process      Process  `json:"process"`
-	Killed       bool     `json:"killed"`
-	Signal       string   `json:"signal,omitempty"`
-	ChildrenKilled int    `json:"children_killed,omitempty"`
-	Error        error    `json:"error,omitempty"`
+	Port           int     `json:"port"`
+	Process        Process `json:"process"`
+	Killed         bool    `json:"killed"`
+	Signal         string  `json:"signal,omitempty"`
+	ChildrenKilled int     `json:"children_killed,omitempty"`
+	Error          error   `json:"error,omitempty"`
 }
 
 // FindOptions configures the process discovery behavior.
@@ -79,6 +83,8 @@ type FindOptions struct {
 
 // KillOptions configures the process killing behavior.
 type KillOptions struct {
+	// ExpectedStartID guards internal signal escalation against PID reuse.
+	ExpectedStartID string `json:"-"`
 	// Protocol restricts killing to TCP, UDP, or All (default: ProtocolAll).
 	Protocol Protocol `json:"protocol"`
 

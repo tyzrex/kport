@@ -4,29 +4,30 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 
 	"github.com/tyzrex/kport/types"
 )
 
 // ProjectInfo contains detected project metadata and suspected ports.
 type ProjectInfo struct {
-	Framework string   `json:"framework"`
-	Ports     []int    `json:"ports"`
-	Source    string   `json:"source"`
-	Details   string   `json:"details,omitempty"`
+	Services  []Service `json:"services,omitempty"`
+	Framework string    `json:"framework"`
+	Ports     []int     `json:"ports"`
+	Source    string    `json:"source"`
+	Details   string    `json:"details,omitempty"`
 }
 
 // DetectProject inspects the directory for known framework configs and dependency manifests.
-func DetectProject(dir string) (ProjectInfo, bool) {
+func detectSingleProject(dir string) (ProjectInfo, bool) {
 	if dir == "" || dir == "." {
 		if d, err := os.Getwd(); err == nil {
 			dir = d
 		}
 	}
 
+	if ports := explicitPorts(dir); len(ports) > 0 {
+		return ProjectInfo{Framework: "Project", Ports: ports, Source: "explicit script/config ports"}, true
+	}
 	// 1. Check docker-compose.yml
 	if composePorts, ok := checkDockerCompose(dir); ok && len(composePorts) > 0 {
 		return ProjectInfo{
@@ -107,7 +108,7 @@ func FindProcessesByCWD(targetDir string, procs []types.Process) []types.Process
 			continue
 		}
 		cleanCwd := filepath.Clean(p.Cwd)
-		if cleanCwd == targetDir || strings.HasPrefix(cleanCwd, targetDir+string(filepath.Separator)) {
+		if within(targetDir, cleanCwd) {
 			matches = append(matches, p)
 		}
 	}
@@ -182,27 +183,6 @@ func checkDockerCompose(dir string) ([]int, bool) {
 		}
 	}
 	return nil, false
-}
-
-func parseComposePorts(content string) []int {
-	var ports []int
-	seen := make(map[int]bool)
-
-	// Look for port mappings like "3000:3000", - "8080:80", "5432:5432"
-	re := regexp.MustCompile(`["']?(\d+):(\d+)["']?`)
-	matches := re.FindAllStringSubmatch(content, -1)
-
-	for _, match := range matches {
-		if len(match) >= 2 {
-			if hostPort, err := strconv.Atoi(match[1]); err == nil && hostPort > 0 && hostPort <= 65535 {
-				if !seen[hostPort] {
-					seen[hostPort] = true
-					ports = append(ports, hostPort)
-				}
-			}
-		}
-	}
-	return ports
 }
 
 func exists(path string) bool {

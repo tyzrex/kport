@@ -2,6 +2,7 @@ package killer
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/tyzrex/kport/internal/proc"
@@ -45,19 +46,35 @@ func KillProcess(p types.Process, opts types.KillOptions) types.KillResult {
 		}
 	}
 
+	if p.StartID == "" {
+		p.StartID = proc.StartIdentity(p.PID)
+	}
+	if p.StartID != "" && proc.StartIdentity(p.PID) != p.StartID {
+		return types.KillResult{Port: p.Port, Process: p, Error: fmt.Errorf("process %d changed or exited; refresh before stopping", p.PID)}
+	}
 	var childrenKilled int
+	var childErrors []error
 	// Kill descendant process tree if requested
 	if opts.KillTree {
 		children := proc.FindProcessChildren(p.PID)
 		for _, childPID := range children {
 			if childPID > 1 && childPID != os.Getpid() {
-				if killed, _, _ := terminateProcess(childPID, opts); killed {
+				childOpts := opts
+				childOpts.ExpectedStartID = proc.StartIdentity(childPID)
+				if childOpts.ExpectedStartID == "" {
+					childErrors = append(childErrors, fmt.Errorf("cannot verify child PID %d", childPID))
+					continue
+				}
+				if killed, _, e := terminateProcess(childPID, childOpts); killed {
 					childrenKilled++
+				} else if e != nil {
+					childErrors = append(childErrors, e)
 				}
 			}
 		}
 	}
 
+	opts.ExpectedStartID = p.StartID
 	killed, sig, err := terminateProcess(p.PID, opts)
 	return types.KillResult{
 		Port:           p.Port,
@@ -65,6 +82,6 @@ func KillProcess(p types.Process, opts types.KillOptions) types.KillResult {
 		Killed:         killed,
 		Signal:         sig,
 		ChildrenKilled: childrenKilled,
-		Error:          err,
+		Error:          errors.Join(append(childErrors, err)...),
 	}
 }

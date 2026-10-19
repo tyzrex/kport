@@ -2,266 +2,203 @@
 
 # ⚡ kport (`killport`)
 
-**The blazing-fast, cross-platform port killer & interactive process manager.**
+**A cross-platform port manager for local development.**
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/tyzrex/kport?style=flat-square)](https://golang.org)
-[![CI Status](https://img.shields.io/github/actions/workflow/status/tyzrex/kport/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tyzrex/kport/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/tyzrex/kport?style=flat-square&color=orange)](https://github.com/tyzrex/kport/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/tyzrex/kport/ci.yml?branch=main)](https://github.com/tyzrex/kport/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-*Say goodbye to sluggish `npx kill-port` boot times and cryptic `lsof -i :3000 | xargs kill` shell gymnastics.*
-
-[Features](#-features) • [Installation](#-installation) • [CLI Usage](#-cli-usage) • [Interactive TUI](#-interactive-tui) • [Go Library](#-go-library-api) • [Presets](#-presets-reference)
+Inspect listeners, stop a conflicting server, monitor port changes, or manage your development session in a live terminal dashboard.
 
 </div>
 
----
+## Installation
 
-## 🚀 Why `kport`?
+Requires Go 1.23 or newer when building from source:
 
-| Feature | `kport` | `npx kill-port` | `lsof` / `fuser` |
-|---|:---:|:---:|:---:|
-| **Startup & Execution Time** | **< 2ms** (Native OS / `/proc`) | ~800ms - 2000ms (Node boot) | ~15ms |
-| **External Dependencies** | **Zero (Pure Go stdlib)** | Node.js + npm/npx + npm packages | OS-dependent binaries |
-| **Cross-Platform** | **Linux, macOS, Windows** | Requires Node.js runtime | Unix-only (`fuser` / `lsof`) |
-| **Interactive TUI Dashboard** | ✅ **Yes (Live search & select)** | ❌ No | ❌ No |
-| **Project / CWD Auto-Detect** | ✅ **Yes (`kport .`)** | ❌ No | ❌ No |
-| **Process Tree Cleanup** | ✅ **Yes (`-T, --tree`)** | ❌ Leaves orphan child workers | ❌ Manual |
-| **Wait-Until-Free (`-W`)** | ✅ **Yes (No `EADDRINUSE` race)** | ❌ No | ❌ No |
-| **Watch Mode (`-w`)** | ✅ **Yes (Continuous auto-kill)** | ❌ No | ❌ No |
-| **Framework Presets** | ✅ **`next`, `vite`, `postgres`, etc.** | ❌ Numeric ports only | ❌ Numeric only |
-| **Docker Resolution** | ✅ **Resolves container names** | ❌ Shows `docker-proxy` | ❌ Shows PID only |
-| **RAM & CWD Inspection** | ✅ **Memory RSS, CWD, PPID** | ❌ No | ❌ Partial |
-
----
-
-## ✨ Features
-
-- ⚡ **Sub-Millisecond Execution**: Direct `/proc` socket inspection in pure Go on Linux, optimized `lsof` on macOS, and Win32 APIs on Windows.
-- 🎨 **Interactive TUI**: Live fuzzy search, spacebar multi-selection, and one-key process killing without typing port numbers.
-- 🧠 **Project-Aware (`kport .`)**: Automatically inspects `package.json`, `next.config`, `vite.config`, `docker-compose.yml`, or `manage.py` and frees your project's dev server.
-- 🌲 **Tree Killer (`-T`)**: Recursively terminates parent processes and all descendant child workers.
-- ⏳ **Wait-Until-Free (`-W`)**: Blocks until the OS socket is verified completely unbound, ensuring bulletproof dev restart scripts (`kport 3000 -W && npm run dev`).
-- 🔍 **Free Port Finder (`kport free`)**: Suggests available open ports if you want to avoid killing active servers.
-- 🐳 **Docker Integration**: Automatically resolves container names when ports are bound to `docker-proxy`.
-- 🛡️ **Safety Guardrails**: Never kills PID 1 (`init`/`systemd`) or caller process; warns on protected ports (SSH `22`, DNS `53`).
-- 🐚 **Shell Autocompletions**: Instant dynamic `<TAB>` completion for `bash`, `zsh`, `fish`, and `powershell`.
-- 📦 **Go Library Included**: Clean, idiomatic Go API to embed into your own Go tools and test suites.
-
----
-
-## 📥 Installation
-
-### Option 1: One-Line Installer (Linux & macOS)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tyzrex/kport/main/install.sh | sh
-```
-
-### Option 2: Using `go install`
-
-```bash
-# Install kport
+```sh
 go install github.com/tyzrex/kport/cmd/kport@latest
-
-# Or install as killport
+# Equivalent command under the original name:
 go install github.com/tyzrex/kport/cmd/killport@latest
 ```
 
-### Option 3: Go Library Import
+Prebuilt binaries are available on [GitHub Releases](https://github.com/tyzrex/kport/releases). Linux/macOS installer:
 
-```bash
-go get github.com/tyzrex/kport
+```sh
+curl -fsSL https://raw.githubusercontent.com/tyzrex/kport/main/install.sh | sh
 ```
 
----
+Both command names use the same implementation. Linux discovery uses `/proc` with system-tool fallbacks; macOS uses `lsof` and `ps`; Windows uses `netstat` and native process APIs. Terminal handling uses `golang.org/x/term`; Compose parsing uses YAML v3. Docker and desktop notifications are optional integrations.
 
-## 💻 CLI Usage
+## Everyday commands
 
-```bash
-# Kill a port
-kport 3000
-kport :3000
-
-# Kill multiple ports or ranges
-kport 3000 8080 5432
-kport 3000-3005
-kport 3000,8080,9000
-
-# Kill by framework preset
-kport next          # Next.js (port 3000)
-kport vite          # Vite / SvelteKit (port 5173)
-kport dev           # Common dev ports (3000, 5173, 8080, 8000, 4200, 5000, ...)
-kport postgres      # PostgreSQL (port 5432)
-kport redis         # Redis (port 6379)
-
-# Auto-detect and kill current project's dev server
-kport .
-
-# Kill process and all its child workers (tree kill)
-kport -T 3000
-
-# Kill and wait until port is completely released
-kport -W 3000
-
-# Watch mode: continuously monitor & kill anything grabbing port 3000
-kport -w 3000
-
-# Inspect detailed process info (Memory RSS, CWD, PPID, Tree)
-kport --inspect 3000
-
-# Preview without killing (dry-run)
-kport -d 3000
-
-# Force kill immediately (SIGKILL)
-kport -f 3000
-
-# List all active listening ports
-kport -l
-
-# Filter list by process name
-kport -l -n node
-
-# Find next available free port
-kport free 3000
+```sh
+kport                              # Live dashboard in a terminal; list when piped
+kport --inspect 3000                # Inspect without stopping anything
+kport -d 3000                      # Dry run
+kport 3000                         # Graceful stop, then force after timeout
+kport 3000 -t 5s -W                 # Allow 5s to exit, then verify port release
+kport -f 3000                      # Force immediately
+kport -T 3000                      # Also stop descendant processes
+kport -i 3000 8080                  # Confirm each process/container
+kport 3000-3005 8080,9000            # Ranges and comma-separated ports
+kport next                         # Framework preset
+kport .                            # Stop verified processes in this project
+kport free 3000                    # Suggest free ports, one per line
+kport -l --sort memory              # List by memory, largest first
+kport -l --user alice               # Exact user filter
+kport -l --project ./apps/api       # Project and descendant directories
+kport -l --exposure public          # Wildcard bindings
+kport --json --inspect 3000         # Structured process information
 ```
 
----
+Flags work before or after positional arguments. `--inspect`, `--dry-run`, and `--list` never stop processes. With `--ui`, they make dashboard actions previews too.
 
-## 🖥️ Interactive TUI
+Stopping a process affects **all its listening ports**. Execution discovers sibling sockets, checks their protection, and returns results for affected sockets. A container action affects the whole container. `-T` additionally affects descendant processes.
 
-Run `kport` with **no arguments** in any terminal (or `kport --ui`):
+`-W` / `--wait` verifies listener disappearance and actual IPv4/IPv6 socket availability. A release timeout is an error and produces a nonzero exit status, including with `--quiet` and `--json`. Use `--wait-timeout 10s` to change the default 5s release timeout. A free-port suggestion or successful wait is a point-in-time check; another process can bind immediately afterward.
 
+## Live dashboard
+
+The dashboard refreshes every second, groups ports by process/container, stays open after actions, and adapts to terminal dimensions. It also stays open when no listeners exist. `--interval 500ms` changes refresh cadence (minimum dashboard interval: 250ms).
+
+| Key | Action |
+|---|---|
+| `↑` / `↓`, `j` / `k` | Navigate owners |
+| `Home` / `End`, `Page Up` / `Page Down` | Jump / page through owners |
+| `/` | Enter search mode |
+| `Enter` while searching | Keep the filter and return to navigation |
+| `Esc` while searching | Clear search and return to navigation |
+| `Ctrl-U`, Backspace | Clear / edit search text |
+| `Space` | Toggle the highlighted owner |
+| `a` / `A` | Toggle visible owners / clear every selection |
+| `Enter` | Toggle details and actions |
+| `x` / `F` | Stop with configured policy / force stop; review impact, then `y` confirms |
+| `n` / `Esc` during confirmation | Cancel |
+| `r` / `p` | Refresh / pause automatic refresh |
+| `s` | Cycle port, memory, project, user, name, protocol sorting |
+| `e` | Cycle all, localhost, public, interface binding filters |
+| `c`, then `p` / `o` / `c` / `u` | Copy PID / ports / command / HTTP URL |
+| `?` | Controls help |
+| `q` / `Ctrl-C` | Quit |
+
+Search matches all space-separated terms across PID, name, command, CWD/project, user, container, port, protocol, and address. Text input is isolated from action shortcuts; Unicode and bracketed paste are supported. Pasted text opens search instead of executing shortcuts.
+
+The footer counts selected owners, affected sockets, and selections hidden by a filter. Hidden selections remain selected until cleared; confirmation lists their impact. Selections follow process start identities and are removed when that process disappears. Actions revalidate identity before signaling and report failures inline. Details show command, executable, CWD, memory, parent, children, and sockets. Help, details, and long confirmation lists scroll with Page Up / Page Down.
+
+Clipboard requests use OSC 52 and require support/permission in your terminal. HTTP URLs are conveniences; the listening service may use a different protocol. Returning ports show the new PID and parent/supervisor so you can investigate automatic restarts.
+
+`public` means a wildcard bind (`0.0.0.0`, `::`, or `*`), not verified Internet reachability. `interface` means a specific non-loopback address.
+
+## Project ownership and monorepos
+
+`kport .` matches working directories under the current project, resolving symlinks. It reports why a process matched. Framework defaults and configured port numbers are **suggestions**, never proof that an unrelated process belongs to this project. Unverified matches are printed to stderr and skipped; use an explicit port if you intend to target one.
+
+Detection reads common framework manifests, literal `--port` / `-p` / `PORT=` script values, literal Vite/Astro/Nuxt `port:` values, Compose published host ports, and `package.json` workspace services (`apps/*`, `packages/*`, or explicit paths). It does not execute JavaScript configuration or resolve every dynamic environment expression. `.killport.json` presets let a workspace define its own service names.
+
+```sh
+kport -d .                         # Review verified ownership
+kport --ui --project ./apps/api    # Dashboard limited to one service
+kport -w 3000 --project .          # Only stop this project's listeners
 ```
-⚡ kport - Interactive Port Manager
-[↑/↓/j/k] Navigate  [Space] Select  [a] Toggle All  [Enter] Kill  [f] Force Kill  [q] Quit
-🔍 Filter: (Type to filter live...)
 
-  SEL  PORT     PROTO  PID        NAME                 MEMORY     USER       ADDRESS
-────────────────────────────────────────────────────────────────────────────────────────
- [ ]   3000     TCP    1823781    next-server          1.5 GB     tyzrex     :::3000
- [✓]   5432     TCP    1204851    docker:postgres      45.2 MB    tyzrex     0.0.0.0:5432
- [ ]   8080     TCP    1808589    java                 340.0 MB   tyzrex     :::8080
-────────────────────────────────────────────────────────────────────────────────────────
-Showing 3/3 process(es) | 1 selected
+Windows exposes executable, parent, and start identity through native APIs, but another process's CWD and full command line are not available through the limited-information API. Project-scoped actions skip processes without verified CWD ownership.
+
+## Monitoring and automatic termination
+
+```sh
+kport --observe 3000               # Never kills; report occupancy changes
+kport --observe 3000 --notify      # Also request desktop notifications
+kport --observe . --json           # Project events as JSON Lines
+kport -w 3000 --name node          # Automatically stop matching processes
+kport -w 3000 --user alice         # Restrict by exact owner
+kport -w 3000 --project ./apps/api  # Restrict by project
+kport -w 3000 --pid 12345          # Pin to this PID's current start identity
 ```
 
-- **Type anywhere** to filter in real-time.
-- **Space** to toggle selection, **a** to select all.
-- **Enter** to kill gracefully, **f** for immediate `SIGKILL`.
+`--observe` reports initial occupancy, releases, and when no matching listener remains. `--watch` / `-w` continuously stops matches; filters apply on every refresh. When a stopped port returns under a new identity, events include the previous PID and new parent/supervisor PID. Ctrl-C stops either mode. Watch requires explicit ports/presets or `.`; it rejects read-only and interactive-confirmation flags instead of silently ignoring them.
 
----
+## Protection and Docker
 
-## 📚 Go Library API
+PID 1 and the caller process are protected. SSH, DNS, DHCP, and NTP ports have built-in protection, and configuration can add more ports. Protection includes other ports owned by a selected process and listening descendants when tree cleanup is requested. **`--force` does not bypass protected ports**; `--force-protected` is the explicit override.
 
-Embed `kport` directly into your Go applications:
+Docker published ports resolve to container names, including ports without a userland proxy. Stopping one uses `docker stop`; force uses `docker kill`. Container mappings are rechecked before action. Shared Docker backends are never directly killed when container ownership cannot be resolved. Compose's working-directory label enables verified project filtering for containers. Queries are bounded; without an accessible Docker engine, ordinary process management still works.
+
+## Configuration
+
+Global `~/.killport.json` and `~/.config/killport/config.json` are merged with `.killport.json` files from ancestor directories through CWD. Nearer files override scalar preferences and preset names. Protected-port lists accumulate. Malformed files and invalid ports/timeouts produce an explicit error.
+
+```json
+{
+  "presets": {
+    "api": [4100, 4101],
+    "frontend": [5173]
+  },
+  "protected_ports": [5432, 6379],
+  "default_force": false,
+  "default_tree": false,
+  "default_timeout": "3s"
+}
+```
+
+CLI flags override defaults. `--graceful` overrides `default_force`; `--tree=false` disables `default_tree`.
+
+Built-in presets include `dev`/`web`, `db`/`database`, `next`, `react`, `remix`, `vite`, `svelte`, `astro`, `vue`, `angular`, `django`, `fastapi`, `flask`, `rails`, `postgres`, `mysql`, `mariadb`, `redis`, `mongo`, and `elastic`. Preset names describe default ports, not verified framework identities.
+
+## Scripting and shell completion
+
+List/inspect/dry-run JSON is an array of process records. Stop JSON is an array of per-socket results with `killed`, `signal`, and an error string when applicable; watch emits one JSON object per event. Empty results are `[]`. `--quiet` suppresses stdout while preserving failure status and stderr diagnostics. Exit status is 0 on success and 1 on argument, discovery, stop, or release-verification failure.
+
+```sh
+source <(kport completion bash)
+source <(kport completion zsh)
+kport completion fish > ~/.config/fish/completions/kport.fish
+kport completion powershell
+```
+
+## Go library
 
 ```go
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"time"
+    "fmt"
+    "log"
+    "time"
 
-	"github.com/tyzrex/kport"
+    "github.com/tyzrex/kport"
 )
 
 func main() {
-	// 1. One-liner kill
-	results, err := kport.Kill(3000, 8080)
-	if err != nil {
-		log.Fatalf("Error: %v", err)
-	}
+    processes, err := killport.Find(3000)
+    if err != nil { log.Fatal(err) }
+    for _, p := range processes {
+        fmt.Printf("PID %d: %s (%s)\n", p.PID, p.Name, p.Cwd)
+    }
 
-	for _, res := range results {
-		if res.Killed {
-			fmt.Printf("Killed %s (PID %d) on port %d [%s]\n",
-				res.Process.Name, res.Process.PID, res.Port, res.Signal)
-		}
-	}
-
-	// 2. Custom Kill Options (Tree kill, WaitForFree, Force)
-	kport.KillPorts([]int{3000}, kport.KillOptions{
-		Protocol:    kport.ProtocolTCP,
-		Force:       true,
-		KillTree:    true,                // Clean up child worker processes
-		WaitForFree: true,                // Wait for OS socket release
-		WaitTimeout: 3 * time.Second,
-	})
-
-	// 3. Inspect active processes
-	procs, _ := kport.Find(3000)
-	for _, p := range procs {
-		fmt.Printf("PID: %d | Name: %s | Memory: %s | CWD: %s\n",
-			p.PID, p.Name, p.MemoryHuman, p.Cwd)
-	}
-
-	// 4. Find free port suggestions
-	freePort, _ := kport.SuggestNextPort(3000)
-	fmt.Printf("Suggested port: %d\n", freePort)
-
-	// 5. Watch mode
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	kport.Watch(ctx, []int{3000}, kport.DefaultKillOptions(), 500*time.Millisecond, func(res kport.KillResult) {
-		fmt.Printf("Auto-killed PID %d on port %d\n", res.Process.PID, res.Port)
-	})
+    opts := killport.DefaultKillOptions()
+    opts.Timeout = 3 * time.Second
+    opts.WaitForFree = true
+    results, err := killport.KillPorts([]int{3000}, opts)
+    if err != nil { log.Fatal(err) }
+    for _, r := range results {
+        if r.Error != nil { log.Printf("PID %d: %v", r.Process.PID, r.Error) }
+    }
 }
 ```
 
----
+Additional APIs include `FindAll`, `FindByName`, `GetProcessDetails`, `KillProcess`, `WaitForFree`, `FindFreePorts`, and `Watch`. The library operates on OS processes; CLI configuration, protected-port policy, and Docker actions are implemented by the command layer. Library `Watch` reports stop failures to its callback and returns discovery errors.
 
-## 🎛️ Presets Reference
+## Development
 
-| Preset Name | Target Ports | Framework / Service |
-|---|---|---|
-| `web` / `dev` | `3000, 3001, 5173, 8000, 8080, 4200, 5000, 8888, 1234, 4321, 9000` | Common development servers |
-| `db` / `database` | `5432, 3306, 27017, 6379, 1433, 9200, 9300` | Common databases |
-| `next` / `react` / `remix` / `rails` | `3000` | Next.js, React, Remix, Ruby on Rails |
-| `vite` / `svelte` | `5173` | Vite, SvelteKit |
-| `astro` | `4321` | Astro |
-| `vue` | `8080, 5173` | Vue.js |
-| `angular` | `4200` | Angular CLI |
-| `django` / `fastapi` | `8000` | Django, FastAPI |
-| `flask` | `5000` | Flask |
-| `postgres` / `postgresql` | `5432` | PostgreSQL |
-| `mysql` / `mariadb` | `3306` | MySQL, MariaDB |
-| `redis` | `6379` | Redis |
-| `mongo` / `mongodb` | `27017` | MongoDB |
-
----
-
-## 🐚 Shell Autocompletions
-
-Generate completion scripts for your shell:
-
-### Bash
-```bash
-source <(kport completion bash)
+```sh
+go test -race ./...
+go vet ./...
+make build
+python3 scripts/check-tui.py ./bin/kport   # Real-terminal interaction checks on Unix
 ```
 
-### Zsh
-```bash
-source <(kport completion zsh)
-```
+Tests start isolated Go listener subprocesses and do not require Python except for the optional PTY check. CI runs tests on Linux, macOS, and Windows with Go 1.23 and 1.26.
 
-### Fish
-```bash
-kport completion fish > ~/.config/fish/completions/kport.fish
-```
-
----
-
-## 🧪 Testing
-
-```bash
-go test -v -race ./...
-```
-
----
-
-## 📄 License
+## License
 
 MIT © [tyzrex](https://github.com/tyzrex)

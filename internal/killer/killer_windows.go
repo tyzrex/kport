@@ -4,29 +4,52 @@ package killer
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"time"
 
 	"github.com/tyzrex/kport/types"
+	"golang.org/x/sys/windows"
 )
 
 func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
-	cmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid))
-	if err := cmd.Run(); err == nil {
-		return true, "TERMINATE", nil
+	// Holding a process handle pins the identity through graceful timeout and
+	// escalation, so a replacement process with the same PID is never targeted.
+	h, e := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
+	if e != nil {
+		return false, "", fmt.Errorf("open PID %d: %w", pid, e)
 	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false, "", fmt.Errorf("failed to find process %d: %w", pid, err)
+	defer windows.CloseHandle(h)
+	if opts.ExpectedStartID != "" {
+		var c, x, k, u windows.Filetime
+		if e = windows.GetProcessTimes(h, &c, &x, &k, &u); e != nil {
+			return false, "", e
+		}
+		if fmt.Sprintf("%d:%d", c.HighDateTime, c.LowDateTime) != opts.ExpectedStartID {
+			return false, "", fmt.Errorf("process identity changed")
+		}
 	}
-
-	if err := proc.Kill(); err != nil {
-		return false, "", fmt.Errorf("failed to kill PID %d: %w", pid, err)
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 1500 * time.Millisecond
 	}
-
-	time.Sleep(100 * time.Millisecond)
+	if !opts.Force {
+		// taskkill without /F requests normal window closure when supported. Some
+		// console services cannot close gracefully and need the bounded fallback.
+		_ = exec.Command("taskkill", "/PID", strconv.Itoa(pid)).Run()
+		if status, _ := windows.WaitForSingleObject(h, uint32(min(timeout.Milliseconds(), int64(0xfffffffe)))); status == windows.WAIT_OBJECT_0 {
+			return true, "CLOSE", nil
+		}
+	}
+	if e = windows.TerminateProcess(h, 1); e != nil {
+		return false, "TERMINATE", e
+	}
+	status, e := windows.WaitForSingleObject(h, 1000)
+	if e != nil {
+		return false, "TERMINATE", e
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		return false, "TERMINATE", fmt.Errorf("PID %d has not exited", pid)
+	}
 	return true, "TERMINATE", nil
 }

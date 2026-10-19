@@ -1,61 +1,200 @@
+// Package docker resolves published host ports to containers without signaling
+// Docker's shared networking backend.
 package docker
 
 import (
-	"bufio"
-	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"net"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/tyzrex/kport/types"
 )
 
-// ContainerInfo holds metadata about a Docker container bound to a port.
-type ContainerInfo struct {
-	ID    string
-	Name  string
-	Ports string
+type ContainerInfo struct{ ID, Name, Ports, Cwd, StartedAt string }
+type Binding struct {
+	Container ContainerInfo
+	HostIP    string
+	Port      int
+	Protocol  types.Protocol
 }
 
-// GetContainerByPort inspects running Docker containers to find which container is mapped to hostPort.
-func GetContainerByPort(hostPort int) (ContainerInfo, bool) {
-	dockerPath, err := exec.LookPath("docker")
-	if err != nil {
-		return ContainerInfo{}, false
+func Bindings() ([]Binding, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, e := exec.CommandContext(ctx, "docker", "ps", "-q", "--no-trunc").Output()
+	if e != nil {
+		return nil, e
 	}
-
-	cmd := exec.Command(dockerPath, "ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Ports}}")
-	out, err := cmd.Output()
-	if err != nil || len(out) == 0 {
-		return ContainerInfo{}, false
+	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return nil, nil
 	}
-
-	targetPattern := fmt.Sprintf(":%d->", hostPort)
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) < 3 {
+	out, e = exec.CommandContext(ctx, "docker", append([]string{"inspect"}, ids...)...).Output()
+	if e != nil {
+		return nil, e
+	}
+	return parseBindings(out)
+}
+func parseBindings(out []byte) ([]Binding, error) {
+	var objects []struct {
+		ID    string `json:"Id"`
+		Name  string
+		State struct {
+			StartedAt string
+			Running   *bool
+		}
+		Config          struct{ Labels map[string]string }
+		NetworkSettings struct {
+			Ports map[string][]struct{ HostIP, HostPort string }
+		}
+	}
+	if e := json.Unmarshal(out, &objects); e != nil {
+		return nil, e
+	}
+	var result []Binding
+	for _, c := range objects {
+		if c.State.Running != nil && !*c.State.Running {
 			continue
 		}
-
-		id := parts[0]
-		name := parts[1]
-		portsStr := parts[2]
-
-		if strings.Contains(portsStr, targetPattern) {
-			return ContainerInfo{
-				ID:    id,
-				Name:  name,
-				Ports: portsStr,
-			}, true
+		for key, bindings := range c.NetworkSettings.Ports {
+			parts := strings.Split(key, "/")
+			if len(parts) != 2 || (parts[1] != "tcp" && parts[1] != "udp") {
+				continue
+			}
+			for _, b := range bindings {
+				port, e := strconv.Atoi(b.HostPort)
+				if e != nil || port < 1 || port > 65535 {
+					continue
+				}
+				result = append(result, Binding{Container: ContainerInfo{ID: c.ID, Name: strings.TrimPrefix(c.Name, "/"), Ports: b.HostPort, Cwd: c.Config.Labels["com.docker.compose.project.working_dir"], StartedAt: c.State.StartedAt}, HostIP: b.HostIP, Port: port, Protocol: types.Protocol(parts[1])})
+			}
 		}
 	}
-
-	return ContainerInfo{}, false
+	return result, nil
 }
-
-// StopContainer attempts to stop the specified Docker container cleanly.
-func StopContainer(containerID string) error {
-	cmd := exec.Command("docker", "stop", "-t", "2", containerID)
-	return cmd.Run()
+func IsBackend(p types.Process) bool {
+	text := strings.ToLower(p.Name + " " + p.Exe)
+	for _, name := range []string{"docker-proxy", "com.docker.backend", "rootlesskit", "rootlessport", "vpnkit"} {
+		if strings.Contains(text, name) {
+			return true
+		}
+	}
+	return false
+}
+func endpointHost(address string) string {
+	host, _, e := net.SplitHostPort(address)
+	if e != nil {
+		if i := strings.LastIndex(address, ":"); i >= 0 {
+			host = address[:i]
+		}
+	}
+	host = strings.Trim(host, "[]")
+	if host == "*" {
+		return "*"
+	}
+	return host
+}
+func Enrich(ps []types.Process) []types.Process {
+	bindings, e := Bindings()
+	if e != nil {
+		return ps
+	}
+	return enrichBindings(ps, bindings)
+}
+func enrichBindings(ps []types.Process, bindings []Binding) []types.Process {
+	seen := map[int]bool{}
+	for i, p := range ps {
+		if !IsBackend(p) {
+			continue
+		}
+		var matches []int
+		for j, b := range bindings {
+			if b.Port == p.Port && b.Protocol == p.Protocol {
+				host := endpointHost(p.Address)
+				if host == b.HostIP || host == "*" {
+					matches = append(matches, j)
+				}
+			}
+		}
+		if len(matches) == 0 {
+			continue
+		}
+		// A wildcard backend may serve several containers; replace it with exact
+		// published endpoints rather than assigning an arbitrary container.
+		for _, j := range matches {
+			seen[j] = true
+		}
+		b := bindings[matches[0]]
+		ps[i].StartID = b.Container.StartedAt
+		ps[i].ContainerID = b.Container.ID
+		ps[i].ContainerName = b.Container.Name
+		ps[i].Cwd = b.Container.Cwd
+		ps[i].Port = b.Port
+		ps[i].Protocol = b.Protocol
+		ps[i].Address = net.JoinHostPort(b.HostIP, strconv.Itoa(b.Port))
+		for _, j := range matches[1:] {
+			b := bindings[j]
+			copy := ps[i]
+			copy.StartID = b.Container.StartedAt
+			copy.ContainerID = b.Container.ID
+			copy.ContainerName = b.Container.Name
+			copy.Cwd = b.Container.Cwd
+			copy.Address = net.JoinHostPort(b.HostIP, strconv.Itoa(b.Port))
+			ps = append(ps, copy)
+		}
+	}
+	for i, b := range bindings {
+		if !seen[i] {
+			ps = append(ps, types.Process{Name: "docker:" + b.Container.Name, StartID: b.Container.StartedAt, ContainerID: b.Container.ID, ContainerName: b.Container.Name, Cwd: b.Container.Cwd, Port: b.Port, Protocol: b.Protocol, Address: net.JoinHostPort(b.HostIP, strconv.Itoa(b.Port)), State: "PUBLISHED"})
+		}
+	}
+	return ps
+}
+func Owns(id string, port int, protocol types.Protocol, startID string) (bool, error) {
+	bindings, e := Bindings()
+	if e != nil {
+		return false, e
+	}
+	for _, b := range bindings {
+		if b.Container.ID == id && b.Port == port && b.Protocol == protocol && b.Container.StartedAt == startID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func GetContainerByPort(port int) (ContainerInfo, bool) {
+	bindings, e := Bindings()
+	if e != nil {
+		return ContainerInfo{}, false
+	}
+	var found ContainerInfo
+	for _, b := range bindings {
+		if b.Port == port {
+			if found.ID != "" && found.ID != b.Container.ID {
+				return ContainerInfo{}, false
+			}
+			found = b.Container
+		}
+	}
+	return found, found.ID != ""
+}
+func StopContainer(id string) error { return Stop(id, false, 2*time.Second) }
+func Stop(id string, force bool, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
+	defer cancel()
+	args := []string{"stop", "-t", strconv.Itoa(max(1, int(math.Ceil(timeout.Seconds())))), id}
+	if force {
+		args = []string{"kill", id}
+	}
+	out, e := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if e != nil {
+		return fmt.Errorf("docker %s: %w: %s", args[0], e, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ['1.22', '1.23']
+        go: ['1.23', '1.26']
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -26,3 +26,10 @@ jobs:
 
       - name: Run Tests
         run: go test -v -race ./...
+
+      - name: Exercise the terminal dashboard
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          go build -o "$RUNNER_TEMP/kport" ./cmd/kport
+          python3 scripts/check-tui.py "$RUNNER_TEMP/kport"

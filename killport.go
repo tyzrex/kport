@@ -2,8 +2,12 @@ package killport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tyzrex/kport/internal/killer"
@@ -80,13 +84,14 @@ func KillPorts(ports []int, opts KillOptions) ([]KillResult, error) {
 		return nil, fmt.Errorf("no ports specified to kill")
 	}
 
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			return nil, fmt.Errorf("invalid port %d", p)
+		}
+	}
 	processes, err := proc.FindProcesses(ports, FindOptions{Protocol: opts.Protocol})
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover processes on ports %v: %w", ports, err)
-	}
-
-	if len(processes) == 0 {
-		return nil, nil
 	}
 
 	var results []KillResult
@@ -112,13 +117,15 @@ func KillPorts(ports []int, opts KillOptions) ([]KillResult, error) {
 	}
 
 	// If WaitForFree is enabled, poll until ports are completely free
-	if opts.WaitForFree {
+	if opts.WaitForFree && !opts.DryRun {
 		waitTimeout := opts.WaitTimeout
 		if waitTimeout <= 0 {
 			waitTimeout = 5 * time.Second
 		}
 		for _, port := range ports {
-			_ = WaitForFree(port, waitTimeout, opts.Protocol)
+			if err := WaitForFree(port, waitTimeout, opts.Protocol); err != nil {
+				return results, err
+			}
 		}
 	}
 
@@ -174,33 +181,34 @@ func IsPortInUse(port int, protocol ...Protocol) (bool, error) {
 
 // WaitForFree blocks until the specified port is no longer in use or until timeout occurs.
 func WaitForFree(port int, timeout time.Duration, protocol ...Protocol) error {
+	if port < 1 || port > 65535 || timeout <= 0 {
+		return fmt.Errorf("valid port and positive wait timeout required")
+	}
 	proto := ProtocolAll
 	if len(protocol) > 0 {
 		proto = protocol[0]
 	}
-
 	deadline := time.Now().Add(timeout)
 	interval := 30 * time.Millisecond
-
-	for time.Now().Before(deadline) {
+	for {
 		inUse, err := IsPortInUse(port, proto)
-		if err == nil && !inUse {
+		if err != nil {
+			return err
+		}
+		available, err := canBind(port, proto)
+		if err != nil {
+			return err
+		}
+		if available && !inUse {
 			return nil
 		}
-		time.Sleep(interval)
-		if interval < 150*time.Millisecond {
-			interval += 15 * time.Millisecond
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timeout waiting for port %d to be released after %v", port, timeout)
 		}
+		time.Sleep(min(interval, remaining))
+		interval = min(interval+15*time.Millisecond, 150*time.Millisecond)
 	}
-
-	inUse, err := IsPortInUse(port, proto)
-	if err != nil {
-		return err
-	}
-	if inUse {
-		return fmt.Errorf("timeout waiting for port %d to be released after %v", port, timeout)
-	}
-	return nil
 }
 
 // KillProcess kills a specific Process instance directly.
@@ -209,7 +217,15 @@ func KillProcess(p Process, opts ...KillOptions) KillResult {
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	return killer.KillProcess(p, opt)
+	r := killer.KillProcess(p, opt)
+	if r.Error == nil && opt.WaitForFree && !opt.DryRun {
+		timeout := opt.WaitTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		r.Error = WaitForFree(p.Port, timeout, p.Protocol)
+	}
+	return r
 }
 
 // Watch continuously monitors the specified ports and kills any process that binds to them.
@@ -230,11 +246,12 @@ func Watch(ctx context.Context, ports []int, opts KillOptions, interval time.Dur
 			return ctx.Err()
 		case <-ticker.C:
 			results, err := KillPorts(ports, opts)
-			if err == nil && len(results) > 0 && onKill != nil {
+			if err != nil {
+				return err
+			}
+			if len(results) > 0 && onKill != nil {
 				for _, r := range results {
-					if r.Killed {
-						onKill(r)
-					}
+					onKill(r)
 				}
 			}
 		}
@@ -249,6 +266,7 @@ func GetProcessDetails(pid int) (Process, error) {
 	}
 	children := proc.FindProcessChildren(pid)
 	return Process{
+		StartID:      proc.StartIdentity(pid),
 		PID:          pid,
 		PPID:         ppid,
 		Name:         name,
@@ -288,10 +306,24 @@ func FindFreePorts(startPort, endPort, count int, protocol ...Protocol) ([]int, 
 		proto = protocol[0]
 	}
 
+	occupied := map[int]bool{}
+	listeners, err := FindAll(FindOptions{Protocol: proto})
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range listeners {
+		occupied[p.Port] = true
+	}
 	var freePorts []int
 	for p := startPort; p <= endPort; p++ {
-		inUse, err := IsPortInUse(p, proto)
-		if err == nil && !inUse {
+		if occupied[p] {
+			continue
+		}
+		available, err := canBind(p, proto)
+		if err != nil {
+			return nil, err
+		}
+		if available {
 			freePorts = append(freePorts, p)
 			if len(freePorts) >= count {
 				break
@@ -308,4 +340,46 @@ func FindFreePorts(startPort, endPort, count int, protocol ...Protocol) ([]int, 
 // SuggestNextPort returns the closest available port to an occupied port.
 func SuggestNextPort(occupiedPort int, protocol ...Protocol) (int, error) {
 	return FindFreePort(occupiedPort+1, protocol...)
+}
+
+// canBind verifies actual socket availability even if process ownership is hidden.
+// A successful probe is a suggestion, not a reservation for a later bind.
+func canBind(port int, proto Protocol) (bool, error) {
+	if port < 1 || port > 65535 {
+		return false, fmt.Errorf("port must be 1-65535")
+	}
+	networks := []string{"tcp4", "tcp6", "udp4", "udp6"}
+	switch proto.Normalize() {
+	case ProtocolTCP:
+		networks = networks[:2]
+	case ProtocolUDP:
+		networks = networks[2:]
+	}
+	for _, network := range networks {
+		hosts := []string{"", "127.0.0.1"}
+		if strings.HasSuffix(network, "6") {
+			hosts = []string{"", "::1"}
+		}
+		for _, host := range hosts {
+			var closer interface{ Close() error }
+			var err error
+			address := net.JoinHostPort(host, strconv.Itoa(port))
+			if strings.HasPrefix(network, "tcp") {
+				closer, err = net.Listen(network, address)
+			} else {
+				closer, err = net.ListenPacket(network, address)
+			}
+			if err != nil {
+				if errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EPROTONOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL) {
+					continue
+				}
+				if errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) {
+					return false, nil
+				}
+				return false, err
+			}
+			closer.Close()
+		}
+	}
+	return true, nil
 }

@@ -5,10 +5,14 @@ package killer
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/tyzrex/kport/internal/proc"
 	"github.com/tyzrex/kport/types"
 )
 
@@ -16,6 +20,10 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 	// Check if process exists
 	if !isProcessAlive(pid) {
 		return false, "", fmt.Errorf("process %d does not exist", pid)
+	}
+
+	if opts.ExpectedStartID != "" && proc.StartIdentity(pid) != opts.ExpectedStartID {
+		return false, "", fmt.Errorf("process identity changed")
 	}
 
 	// Force kill mode
@@ -27,7 +35,9 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 			return false, "SIGKILL", fmt.Errorf("failed to send SIGKILL to PID %d: %w", pid, err)
 		}
 		// Confirm death
-		waitForExit(pid, 200*time.Millisecond)
+		if !waitForExit(pid, 200*time.Millisecond) {
+			return false, "SIGKILL", fmt.Errorf("PID %d has not exited", pid)
+		}
 		return true, "SIGKILL", nil
 	}
 
@@ -49,6 +59,10 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 		return true, "SIGTERM", nil
 	}
 
+	if opts.ExpectedStartID != "" && proc.StartIdentity(pid) != opts.ExpectedStartID {
+		return true, "SIGTERM", nil
+	}
+
 	// Process still alive after timeout: send SIGKILL
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		if err == syscall.ESRCH {
@@ -57,14 +71,22 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 		return false, "SIGKILL", fmt.Errorf("process did not exit after SIGTERM, SIGKILL failed for PID %d: %w", pid, err)
 	}
 
-	waitForExit(pid, 300*time.Millisecond)
+	if !waitForExit(pid, 300*time.Millisecond) {
+		return false, "SIGKILL", fmt.Errorf("PID %d has not exited", pid)
+	}
 	return true, "SIGKILL", nil
 }
 
 func isProcessAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
-	if err != nil {
+	if err != nil && err != syscall.EPERM {
 		return false
+	}
+	if runtime.GOOS == "darwin" {
+		out, e := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
+		if e != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			return false
+		}
 	}
 	// On Linux, check if process is in zombie or dead state
 	if statusBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {

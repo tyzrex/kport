@@ -31,11 +31,22 @@ func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, erro
 		}
 	}
 
-	// Populate process names and command lines
+	cache := map[int]types.Process{}
 	for i := range results {
-		name, cmdline := getWindowsProcessInfo(results[i].PID)
-		results[i].Name = name
-		results[i].CommandLine = cmdline
+		p, ok := cache[results[i].PID]
+		if !ok {
+			name, cmd, exe, user, ppid, cwd, rss := GetProcessDetails(results[i].PID)
+			p = types.Process{Name: name, CommandLine: cmd, Exe: exe, User: user, PPID: ppid, Cwd: cwd, MemoryRSS: rss, MemoryHuman: FormatBytes(rss)}
+			cache[results[i].PID] = p
+		}
+		results[i].Name = p.Name
+		results[i].CommandLine = p.CommandLine
+		results[i].Exe = p.Exe
+		results[i].User = p.User
+		results[i].PPID = p.PPID
+		results[i].Cwd = p.Cwd
+		results[i].MemoryRSS = p.MemoryRSS
+		results[i].MemoryHuman = p.MemoryHuman
 	}
 
 	return DeduplicateProcesses(results), nil
