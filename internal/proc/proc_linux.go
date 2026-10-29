@@ -5,6 +5,7 @@ package proc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tyzrex/kport/types"
 )
@@ -201,6 +203,9 @@ func scanPIDsForInodes(inodeMap map[string]socketInfo, opts types.FindOptions) (
 	var results []types.Process
 
 	for _, entry := range entries {
+		if opts.Context != nil && opts.Context.Err() != nil {
+			return nil, opts.Context.Err()
+		}
 		pid, err := strconv.Atoi(entry)
 		if err != nil || pid <= 0 {
 			continue
@@ -276,8 +281,7 @@ func scanWithSS(ports []int, opts types.FindOptions) ([]types.Process, error) {
 		args = []string{"-lptun"}
 	}
 
-	cmd := exec.Command(ssPath, args...)
-	out, err := cmd.Output()
+	out, err := Output(opts.Context, ssPath, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -393,8 +397,7 @@ func scanWithLsof(ports []int, opts types.FindOptions) ([]types.Process, error) 
 		}
 
 		args := append(protoArgs, "-n", "-P", "-F", "pcn")
-		cmd := exec.Command(lsofPath, args...)
-		out, err := cmd.Output()
+		out, err := Output(opts.Context, lsofPath, args...)
 		if err != nil || len(out) == 0 {
 			continue
 		}
@@ -486,8 +489,15 @@ func scanWithFuser(ports []int, opts types.FindOptions) ([]types.Process, error)
 
 		for _, protoStr := range protocols {
 			target := fmt.Sprintf("%d/%s", port, protoStr)
-			cmd := exec.Command(fuserPath, target)
+			ctx := opts.Context
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			cmd := exec.CommandContext(ctx, fuserPath, target)
+			cmd.WaitDelay = 100 * time.Millisecond
 			out, _ := cmd.CombinedOutput()
+			cancel()
 
 			pids := strings.Fields(string(out))
 			for _, pidStr := range pids {

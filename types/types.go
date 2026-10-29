@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Protocol represents a network protocol filter.
 type Protocol string
@@ -71,6 +74,8 @@ type KillResult struct {
 
 // FindOptions configures the process discovery behavior.
 type FindOptions struct {
+	// Context cancels discovery and bounds external commands. Nil uses Background.
+	Context context.Context `json:"-"`
 	// Protocol restricts discovery to TCP, UDP, or All (default: ProtocolAll).
 	Protocol Protocol `json:"protocol"`
 
@@ -83,6 +88,10 @@ type FindOptions struct {
 
 // KillOptions configures the process killing behavior.
 type KillOptions struct {
+	// Context cancels pending actions and graceful waits. Nil uses Background.
+	Context context.Context `json:"-"`
+	// TreeTargets pins an approved descendant snapshot. Nil discovers descendants.
+	TreeTargets map[int]string `json:"-"`
 	// ExpectedStartID guards internal signal escalation against PID reuse.
 	ExpectedStartID string `json:"-"`
 	// Protocol restricts killing to TCP, UDP, or All (default: ProtocolAll).

@@ -61,13 +61,16 @@ func isNumericChar(c byte) bool {
 }
 
 func parsePortArgs(args []string) ([]int, error) {
+	return parsePortArgsWithResolver(args, killport.ResolvePreset)
+}
+func parsePortArgsWithResolver(args []string, resolve func(string) ([]int, bool)) ([]int, error) {
 	var ports []int
 	seen := make(map[int]bool)
 
 	for _, arg := range args {
 		arg = strings.TrimPrefix(arg, ":")
 
-		if presetPorts, ok := killport.ResolvePreset(arg); ok {
+		if presetPorts, ok := resolve(arg); ok {
 			for _, p := range presetPorts {
 				if !seen[p] {
 					seen[p] = true
@@ -83,7 +86,7 @@ func parsePortArgs(args []string) ([]int, error) {
 				continue
 			}
 
-			if presetPorts, ok := killport.ResolvePreset(part); ok {
+			if presetPorts, ok := resolve(part); ok {
 				for _, p := range presetPorts {
 					if !seen[p] {
 						seen[p] = true

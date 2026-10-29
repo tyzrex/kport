@@ -186,7 +186,29 @@ func main() {
 }
 ```
 
-Additional APIs include `FindAll`, `FindByName`, `GetProcessDetails`, `KillProcess`, `WaitForFree`, `FindFreePorts`, and `Watch`. The library operates on OS processes; CLI configuration, protected-port policy, and Docker actions are implemented by the command layer. Library `Watch` reports stop failures to its callback and returns discovery errors.
+Additional APIs include `FindAll`, `FindByName`, `GetProcessDetails`, `KillProcess`, `WaitForFree`, `FindFreePorts`, and `Watch`. The library operates on OS processes; Configuration, protected-port policy, and Docker actions are implemented by the shared internal application service. Library `Watch` reports stop failures to its callback and returns discovery errors.
+
+## Shared application behavior
+
+The CLI, terminal dashboard, and future desktop adapters share `internal/app.Service`
+for discovery, Docker integration, protected-port policy, and action execution.
+Each service copies its configured presets and protections; loading a project does
+not change the library's global defaults or another application session.
+
+Tree actions pin descendant process identities before checking protection. If a
+new or replaced descendant appears before execution, the action fails and asks
+for a refresh instead of extending the approved target set.
+
+`FindOptions.Context` and `KillOptions.Context` support cancellation. The library
+also provides `GetProcessDetailsContext` and `WaitForFreeContext`. OS query commands
+have a three-second deadline, and Docker discovery retains its two-second budget.
+Cancellation stops pending work and escalation; it cannot undo signals already sent.
+
+macOS discovery distinguishes normal `lsof` no-match results from failures, and
+fails explicitly on command errors instead of reporting an empty listener list.
+Process metadata is collected in batches per snapshot, with start identities
+rechecked afterward. Working directories and memory remain fresh, since caching
+working directories could produce incorrect project ownership matches.
 
 ## Development
 

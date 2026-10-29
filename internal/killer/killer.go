@@ -1,6 +1,7 @@
 package killer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +28,12 @@ func ValidatePID(pid int) error {
 
 // KillProcess terminates a process according to the provided options, including child trees if requested.
 func KillProcess(p types.Process, opts types.KillOptions) types.KillResult {
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+	if err := opts.Context.Err(); err != nil {
+		return types.KillResult{Port: p.Port, Process: p, Error: err}
+	}
 	if opts.DryRun {
 		return types.KillResult{
 			Port:    p.Port,
@@ -49,18 +56,30 @@ func KillProcess(p types.Process, opts types.KillOptions) types.KillResult {
 	if p.StartID == "" {
 		p.StartID = proc.StartIdentity(p.PID)
 	}
-	if p.StartID != "" && proc.StartIdentity(p.PID) != p.StartID {
+	if p.StartID == "" || proc.StartIdentity(p.PID) != p.StartID {
 		return types.KillResult{Port: p.Port, Process: p, Error: fmt.Errorf("process %d changed or exited; refresh before stopping", p.PID)}
 	}
 	var childrenKilled int
 	var childErrors []error
 	// Kill descendant process tree if requested
 	if opts.KillTree {
-		children := proc.FindProcessChildren(p.PID)
+		children := proc.FindProcessChildrenContext(opts.Context, p.PID)
+		if opts.TreeTargets != nil {
+			for _, pid := range children {
+				if id, ok := opts.TreeTargets[pid]; !ok || id == "" || proc.StartIdentity(pid) != id {
+					return types.KillResult{Port: p.Port, Process: p, Error: fmt.Errorf("process tree changed; refresh before stopping")}
+				}
+			}
+			// Never add newly discovered children to an approved action.
+			children = p.ChildrenPIDs
+		}
 		for _, childPID := range children {
 			if childPID > 1 && childPID != os.Getpid() {
 				childOpts := opts
 				childOpts.ExpectedStartID = proc.StartIdentity(childPID)
+				if opts.TreeTargets != nil {
+					childOpts.ExpectedStartID = opts.TreeTargets[childPID]
+				}
 				if childOpts.ExpectedStartID == "" {
 					childErrors = append(childErrors, fmt.Errorf("cannot verify child PID %d", childPID))
 					continue

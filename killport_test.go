@@ -2,6 +2,8 @@ package killport_test
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -400,5 +402,16 @@ func TestWaitForFreeTimeoutAndDryRun(t *testing.T) {
 	c.Close()
 	if _, e = killport.KillPort(0, killport.DefaultKillOptions()); e == nil {
 		t.Fatal("invalid kill port accepted")
+	}
+}
+
+func TestContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := killport.GetProcessDetailsContext(ctx, os.Getpid()); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if err := killport.WaitForFreeContext(ctx, 3000, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 }

@@ -89,7 +89,7 @@ func KillPorts(ports []int, opts KillOptions) ([]KillResult, error) {
 			return nil, fmt.Errorf("invalid port %d", p)
 		}
 	}
-	processes, err := proc.FindProcesses(ports, FindOptions{Protocol: opts.Protocol})
+	processes, err := proc.FindProcesses(ports, FindOptions{Context: opts.Context, Protocol: opts.Protocol})
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover processes on ports %v: %w", ports, err)
 	}
@@ -123,7 +123,7 @@ func KillPorts(ports []int, opts KillOptions) ([]KillResult, error) {
 			waitTimeout = 5 * time.Second
 		}
 		for _, port := range ports {
-			if err := WaitForFree(port, waitTimeout, opts.Protocol); err != nil {
+			if err := WaitForFreeContext(opts.Context, port, waitTimeout, opts.Protocol); err != nil {
 				return results, err
 			}
 		}
@@ -181,6 +181,16 @@ func IsPortInUse(port int, protocol ...Protocol) (bool, error) {
 
 // WaitForFree blocks until the specified port is no longer in use or until timeout occurs.
 func WaitForFree(port int, timeout time.Duration, protocol ...Protocol) error {
+	return WaitForFreeContext(context.Background(), port, timeout, protocol...)
+}
+
+// WaitForFreeContext verifies release until cancellation or timeout.
+func WaitForFreeContext(ctx context.Context, port int, timeout time.Duration, protocol ...Protocol) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if port < 1 || port > 65535 || timeout <= 0 {
 		return fmt.Errorf("valid port and positive wait timeout required")
 	}
@@ -191,8 +201,15 @@ func WaitForFree(port int, timeout time.Duration, protocol ...Protocol) error {
 	deadline := time.Now().Add(timeout)
 	interval := 30 * time.Millisecond
 	for {
-		inUse, err := IsPortInUse(port, proto)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("timeout or cancellation waiting for port %d: %w", port, err)
+		}
+		ps, err := FindPort(port, FindOptions{Context: ctx, Protocol: proto})
+		inUse := len(ps) > 0
 		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("timeout or cancellation waiting for port %d: %w", port, ctx.Err())
+			}
 			return err
 		}
 		available, err := canBind(port, proto)
@@ -206,7 +223,11 @@ func WaitForFree(port int, timeout time.Duration, protocol ...Protocol) error {
 		if remaining <= 0 {
 			return fmt.Errorf("timeout waiting for port %d to be released after %v", port, timeout)
 		}
-		time.Sleep(min(interval, remaining))
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout or cancellation waiting for port %d: %w", port, ctx.Err())
+		case <-time.After(min(interval, remaining)):
+		}
 		interval = min(interval+15*time.Millisecond, 150*time.Millisecond)
 	}
 }
@@ -223,7 +244,7 @@ func KillProcess(p Process, opts ...KillOptions) KillResult {
 		if timeout <= 0 {
 			timeout = 5 * time.Second
 		}
-		r.Error = WaitForFree(p.Port, timeout, p.Protocol)
+		r.Error = WaitForFreeContext(opt.Context, p.Port, timeout, p.Protocol)
 	}
 	return r
 }
@@ -237,6 +258,7 @@ func Watch(ctx context.Context, ports []int, opts KillOptions, interval time.Dur
 		interval = 500 * time.Millisecond
 	}
 
+	opts.Context = ctx
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -260,13 +282,34 @@ func Watch(ctx context.Context, ports []int, opts KillOptions, interval time.Dur
 
 // GetProcessDetails retrieves detailed metadata about a given PID.
 func GetProcessDetails(pid int) (Process, error) {
-	name, cmdline, exe, user, ppid, cwd, rss := proc.GetProcessDetails(pid)
+	return GetProcessDetailsContext(context.Background(), pid)
+}
+
+// GetProcessDetailsContext reads fresh metadata with cancellable OS queries.
+func GetProcessDetailsContext(ctx context.Context, pid int) (Process, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Process{}, err
+	}
+	startID := proc.StartIdentity(pid)
+	name, cmdline, exe, user, ppid, cwd, rss := proc.GetProcessDetailsContext(ctx, pid)
+	if err := ctx.Err(); err != nil {
+		return Process{}, err
+	}
 	if name == "" && exe == "" {
 		return Process{}, fmt.Errorf("process %d not found or not readable", pid)
 	}
-	children := proc.FindProcessChildren(pid)
+	if startID == "" || proc.StartIdentity(pid) != startID {
+		return Process{}, fmt.Errorf("process %d changed or exited; refresh details", pid)
+	}
+	children := proc.FindProcessChildrenContext(ctx, pid)
+	if err := ctx.Err(); err != nil {
+		return Process{}, err
+	}
 	return Process{
-		StartID:      proc.StartIdentity(pid),
+		StartID:      startID,
 		PID:          pid,
 		PPID:         ppid,
 		Name:         name,

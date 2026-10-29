@@ -21,8 +21,7 @@ func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, erro
 	var results []types.Process
 	for _, port := range ports {
 		args := []string{fmt.Sprintf("-i:%d", port), "-sTCP:LISTEN", "-n", "-P", "-F", "pcn"}
-		cmd := exec.Command(lsofPath, args...)
-		out, err := cmd.Output()
+		out, err := Output(opts.Context, lsofPath, args...)
 		if err != nil || len(out) == 0 {
 			continue
 		}

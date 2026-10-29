@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tyzrex/kport/internal/proc"
 	"github.com/tyzrex/kport/types"
 )
 
@@ -24,10 +25,14 @@ type Binding struct {
 	Protocol  types.Protocol
 }
 
-func Bindings() ([]Binding, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func Bindings() ([]Binding, error) { return BindingsContext(context.Background()) }
+func BindingsContext(ctx context.Context) ([]Binding, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	out, e := exec.CommandContext(ctx, "docker", "ps", "-q", "--no-trunc").Output()
+	out, e := proc.Output(ctx, "docker", "ps", "-q", "--no-trunc")
 	if e != nil {
 		return nil, e
 	}
@@ -35,7 +40,7 @@ func Bindings() ([]Binding, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	out, e = exec.CommandContext(ctx, "docker", append([]string{"inspect"}, ids...)...).Output()
+	out, e = proc.Output(ctx, "docker", append([]string{"inspect"}, ids...)...)
 	if e != nil {
 		return nil, e
 	}
@@ -101,11 +106,22 @@ func endpointHost(address string) string {
 	return host
 }
 func Enrich(ps []types.Process) []types.Process {
-	bindings, e := Bindings()
-	if e != nil {
-		return ps
+	result, _ := EnrichContext(context.Background(), ps)
+	return result
+}
+func EnrichContext(ctx context.Context, ps []types.Process) ([]types.Process, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return enrichBindings(ps, bindings)
+	bindings, e := BindingsContext(ctx)
+	if ctx.Err() != nil {
+		return ps, ctx.Err()
+	}
+	// Docker is optional; an unavailable engine does not hide ordinary listeners.
+	if e != nil {
+		return ps, nil
+	}
+	return enrichBindings(ps, bindings), nil
 }
 func enrichBindings(ps []types.Process, bindings []Binding) []types.Process {
 	seen := map[int]bool{}
@@ -157,7 +173,10 @@ func enrichBindings(ps []types.Process, bindings []Binding) []types.Process {
 	return ps
 }
 func Owns(id string, port int, protocol types.Protocol, startID string) (bool, error) {
-	bindings, e := Bindings()
+	return OwnsContext(context.Background(), id, port, protocol, startID)
+}
+func OwnsContext(ctx context.Context, id string, port int, protocol types.Protocol, startID string) (bool, error) {
+	bindings, e := BindingsContext(ctx)
 	if e != nil {
 		return false, e
 	}
@@ -186,13 +205,21 @@ func GetContainerByPort(port int) (ContainerInfo, bool) {
 }
 func StopContainer(id string) error { return Stop(id, false, 2*time.Second) }
 func Stop(id string, force bool, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
+	return StopContext(context.Background(), id, force, timeout)
+}
+func StopContext(ctx context.Context, id string, force bool, timeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout+5*time.Second)
 	defer cancel()
 	args := []string{"stop", "-t", strconv.Itoa(max(1, int(math.Ceil(timeout.Seconds())))), id}
 	if force {
 		args = []string{"kill", id}
 	}
-	out, e := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.WaitDelay = 100 * time.Millisecond
+	out, e := cmd.CombinedOutput()
 	if e != nil {
 		return fmt.Errorf("docker %s: %w: %s", args[0], e, strings.TrimSpace(string(out)))
 	}

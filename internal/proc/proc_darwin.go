@@ -19,38 +19,35 @@ func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, erro
 	}
 
 	var results []types.Process
-
-	if len(ports) == 0 {
-		if opts.Protocol == types.ProtocolAll || opts.Protocol == types.ProtocolTCP {
-			cmd := exec.Command(lsofPath, "-iTCP", "-sTCP:LISTEN", "-n", "-P", "-F", "pcn")
-			if out, err := cmd.Output(); err == nil {
-				results = append(results, parseDarwinLsofOutput(out, 0, types.ProtocolTCP)...)
-			}
+	for _, proto := range []types.Protocol{types.ProtocolTCP, types.ProtocolUDP} {
+		if !opts.Protocol.Matches(proto) {
+			continue
 		}
-		if opts.Protocol == types.ProtocolAll || opts.Protocol == types.ProtocolUDP {
-			cmd := exec.Command(lsofPath, "-iUDP", "-n", "-P", "-F", "pcn")
-			if out, err := cmd.Output(); err == nil {
-				results = append(results, parseDarwinLsofOutput(out, 0, types.ProtocolUDP)...)
-			}
+		args := []string{"-n", "-P", "-F", "pcn"}
+		selector := "-iTCP"
+		if proto == types.ProtocolUDP {
+			selector = "-iUDP"
+		} else {
+			args = append(args, "-sTCP:LISTEN")
 		}
-	} else {
-		for _, port := range ports {
-			if opts.Protocol == types.ProtocolAll || opts.Protocol == types.ProtocolTCP {
-				cmd := exec.Command(lsofPath, fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-n", "-P", "-F", "pcn")
-				if out, err := cmd.Output(); err == nil {
-					results = append(results, parseDarwinLsofOutput(out, port, types.ProtocolTCP)...)
-				}
+		if len(ports) > 0 {
+			values := make([]string, len(ports))
+			for i, port := range ports {
+				values[i] = strconv.Itoa(port)
 			}
-			if opts.Protocol == types.ProtocolAll || opts.Protocol == types.ProtocolUDP {
-				cmd := exec.Command(lsofPath, fmt.Sprintf("-iUDP:%d", port), "-n", "-P", "-F", "pcn")
-				if out, err := cmd.Output(); err == nil {
-					results = append(results, parseDarwinLsofOutput(out, port, types.ProtocolUDP)...)
-				}
-			}
+			selector += ":" + strings.Join(values, ",")
 		}
+		out, err := lsofOutput(opts.Context, lsofPath, append(args, selector)...)
+		if err != nil {
+			return nil, fmt.Errorf("discover %s listeners: %w", proto, err)
+		}
+		results = append(results, parseDarwinLsofOutput(out, 0, proto)...)
 	}
-
-	return DeduplicateProcesses(results), nil
+	results = DeduplicateProcesses(results)
+	if len(results) == 0 {
+		return results, nil
+	}
+	return enrichDarwin(opts, results)
 }
 
 func parseDarwinLsofOutput(out []byte, defaultPort int, proto types.Protocol) []types.Process {
@@ -85,11 +82,7 @@ func parseDarwinLsofOutput(out []byte, defaultPort int, proto types.Protocol) []
 			}
 			p, ok := cache[pid]
 			if !ok {
-				n, cmd, exe, user, ppid, cwd, rss := GetProcessDetails(pid)
-				if n == "" {
-					n = name
-				}
-				p = types.Process{PID: pid, Name: n, CommandLine: cmd, Exe: exe, User: user, PPID: ppid, Cwd: cwd, MemoryRSS: rss, MemoryHuman: FormatBytes(rss)}
+				p = types.Process{PID: pid, Name: name}
 				cache[pid] = p
 			}
 			p.Port = port

@@ -3,27 +3,32 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tyzrex/kport"
+	"github.com/tyzrex/kport/internal/app"
 	"github.com/tyzrex/kport/internal/completion"
 	"github.com/tyzrex/kport/internal/config"
 	"github.com/tyzrex/kport/internal/detect"
-	"github.com/tyzrex/kport/internal/docker"
 	"github.com/tyzrex/kport/internal/notify"
 	"github.com/tyzrex/kport/internal/tui"
 	"golang.org/x/term"
 )
 
 type options struct {
+	service                                                                              *app.Service
+	ctx                                                                                  context.Context
 	pid                                                                                  int
 	startID                                                                              string
 	force, graceful, dry, list, json, verbose, quiet, confirm, ui                        bool
@@ -51,13 +56,9 @@ func run(args []string, version string) error {
 	if err != nil {
 		return err
 	}
-	for k, v := range cfg.Presets {
-		killport.Presets[k] = v
-	}
-	for _, p := range cfg.ProtectedPorts {
-		killport.ProtectedPorts[p] = "configured protection"
-	}
-	o := options{force: cfg.DefaultForce, tree: cfg.DefaultTree, timeout: cfg.Timeout}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	o := options{service: app.New(cfg), ctx: ctx, force: cfg.DefaultForce, tree: cfg.DefaultTree, timeout: cfg.Timeout}
 	fs := flag.NewFlagSet("kport", flag.ContinueOnError)
 	boolFlag := func(p *bool, value bool, help string, names ...string) {
 		for _, n := range names {
@@ -176,7 +177,7 @@ func run(args []string, version string) error {
 	projectMode := len(args) == 1 && (args[0] == "." || args[0] == "auto" || args[0] == "cwd" || args[0] == "here")
 	var ports []int
 	if !projectMode {
-		ports, err = parsePortArgs(args)
+		ports, err = parsePortArgsWithResolver(args, o.service.ResolvePreset)
 		if err != nil {
 			return err
 		}
@@ -236,7 +237,7 @@ func run(args []string, version string) error {
 			return err
 		}
 	}
-	rs := executeTargets(ps, killOptions(o), o.allowProtected)
+	rs := o.service.ExecuteTargets(ps, killOptions(o), o.allowProtected)
 	if o.wait {
 		seen := map[int]bool{}
 		for _, r := range rs {
@@ -244,7 +245,7 @@ func run(args []string, version string) error {
 		}
 		for _, port := range ports {
 			if !seen[port] {
-				if e := killport.WaitForFree(port, o.waitTimeout, killport.Protocol(o.protocol)); e != nil {
+				if e := killport.WaitForFreeContext(o.ctx, port, o.waitTimeout, killport.Protocol(o.protocol)); e != nil {
 					rs = append(rs, killport.KillResult{Port: port, Process: killport.Process{Port: port, Protocol: killport.Protocol(o.protocol)}, Error: e})
 				}
 			}
@@ -260,30 +261,20 @@ func run(args []string, version string) error {
 }
 
 func killOptions(o options) killport.KillOptions {
-	return killport.KillOptions{Protocol: killport.Protocol(o.protocol), Force: o.force, Timeout: o.timeout, KillTree: o.tree, WaitForFree: o.wait, WaitTimeout: o.waitTimeout, DryRun: o.dry || o.inspect || o.list}
+	return killport.KillOptions{Context: o.ctx, Protocol: killport.Protocol(o.protocol), Force: o.force, Timeout: o.timeout, KillTree: o.tree, WaitForFree: o.wait, WaitTimeout: o.waitTimeout, DryRun: o.dry || o.inspect || o.list}
 }
 func absoluteDir(dir string) (string, error) { return detect.AbsoluteDir(dir) }
 func discoverUnscoped(o options) ([]killport.Process, error) {
-	ps, e := killport.FindAll(killport.FindOptions{Protocol: killport.Protocol(o.protocol), IncludeTree: o.tree || o.inspect || o.verbose})
-	if e != nil {
-		return nil, e
-	}
-	return docker.Enrich(ps), nil
+	return o.service.Discover(o.ctx, killport.FindOptions{Protocol: killport.Protocol(o.protocol), IncludeTree: o.tree || o.inspect || o.verbose})
 }
 func discover(ports []int, o options) ([]killport.Process, error) {
-	findOpts := killport.FindOptions{Protocol: killport.Protocol(o.protocol), IncludeTree: o.tree || o.inspect || o.verbose}
-	var ps []killport.Process
-	var e error
-	if len(ports) == 0 {
-		ps, e = killport.FindAll(findOpts)
-	} else {
-		ps, e = killport.FindPorts(ports, findOpts)
-	}
+	ps, e := o.service.DiscoverPorts(o.ctx, ports, killport.FindOptions{Protocol: killport.Protocol(o.protocol), IncludeTree: o.tree || o.inspect || o.verbose})
 	if e != nil {
 		return nil, e
 	}
-	return filterProcesses(restrictPorts(docker.Enrich(ps), ports), o), nil
+	return filterProcesses(restrictPorts(ps, ports), o), nil
 }
+
 func restrictPorts(ps []killport.Process, ports []int) []killport.Process {
 	if len(ports) == 0 {
 		return ps

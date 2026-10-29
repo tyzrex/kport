@@ -3,9 +3,9 @@
 package killer
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,6 +17,12 @@ import (
 )
 
 func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+	if e := opts.Context.Err(); e != nil {
+		return false, "", e
+	}
 	// Check if process exists
 	if !isProcessAlive(pid) {
 		return false, "", fmt.Errorf("process %d does not exist", pid)
@@ -35,7 +41,7 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 			return false, "SIGKILL", fmt.Errorf("failed to send SIGKILL to PID %d: %w", pid, err)
 		}
 		// Confirm death
-		if !waitForExit(pid, 200*time.Millisecond) {
+		if !waitForExit(opts.Context, pid, 200*time.Millisecond) {
 			return false, "SIGKILL", fmt.Errorf("PID %d has not exited", pid)
 		}
 		return true, "SIGKILL", nil
@@ -55,12 +61,16 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 	}
 
 	// Wait for process to exit gracefully
-	if exited := waitForExit(pid, timeout); exited {
+	if exited := waitForExit(opts.Context, pid, timeout); exited {
 		return true, "SIGTERM", nil
 	}
 
 	if opts.ExpectedStartID != "" && proc.StartIdentity(pid) != opts.ExpectedStartID {
 		return true, "SIGTERM", nil
+	}
+
+	if e := opts.Context.Err(); e != nil {
+		return false, "SIGTERM", e
 	}
 
 	// Process still alive after timeout: send SIGKILL
@@ -71,7 +81,7 @@ func terminateProcess(pid int, opts types.KillOptions) (bool, string, error) {
 		return false, "SIGKILL", fmt.Errorf("process did not exit after SIGTERM, SIGKILL failed for PID %d: %w", pid, err)
 	}
 
-	if !waitForExit(pid, 300*time.Millisecond) {
+	if !waitForExit(opts.Context, pid, 300*time.Millisecond) {
 		return false, "SIGKILL", fmt.Errorf("PID %d has not exited", pid)
 	}
 	return true, "SIGKILL", nil
@@ -83,7 +93,7 @@ func isProcessAlive(pid int) bool {
 		return false
 	}
 	if runtime.GOOS == "darwin" {
-		out, e := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
+		out, e := proc.Output(context.Background(), "ps", "-p", strconv.Itoa(pid), "-o", "stat=")
 		if e != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
 			return false
 		}
@@ -103,7 +113,7 @@ func isProcessAlive(pid int) bool {
 	return true
 }
 
-func waitForExit(pid int, timeout time.Duration) bool {
+func waitForExit(ctx context.Context, pid int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	interval := 25 * time.Millisecond
 
@@ -111,7 +121,11 @@ func waitForExit(pid int, timeout time.Duration) bool {
 		if !isProcessAlive(pid) {
 			return true
 		}
-		time.Sleep(interval)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(interval):
+		}
 		if interval < 100*time.Millisecond {
 			interval += 10 * time.Millisecond
 		}

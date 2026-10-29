@@ -5,8 +5,8 @@ package proc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -18,24 +18,29 @@ func findOSProcesses(ports []int, opts types.FindOptions) ([]types.Process, erro
 	var results []types.Process
 
 	if opts.Protocol == types.ProtocolAll || opts.Protocol == types.ProtocolTCP {
-		cmd := exec.Command("netstat", "-ano", "-p", "tcp")
-		if out, err := cmd.Output(); err == nil {
+		if out, err := Output(opts.Context, "netstat", "-ano", "-p", "tcp"); err == nil {
 			results = append(results, parseWindowsNetstat(out, ports, types.ProtocolTCP)...)
+		} else {
+			return nil, fmt.Errorf("discover TCP listeners: %w", err)
 		}
 	}
 
 	if opts.Protocol == types.ProtocolAll || opts.Protocol == types.ProtocolUDP {
-		cmd := exec.Command("netstat", "-ano", "-p", "udp")
-		if out, err := cmd.Output(); err == nil {
+		if out, err := Output(opts.Context, "netstat", "-ano", "-p", "udp"); err == nil {
 			results = append(results, parseWindowsNetstat(out, ports, types.ProtocolUDP)...)
+		} else {
+			return nil, fmt.Errorf("discover UDP listeners: %w", err)
 		}
 	}
 
 	cache := map[int]types.Process{}
 	for i := range results {
+		if opts.Context != nil && opts.Context.Err() != nil {
+			return nil, opts.Context.Err()
+		}
 		p, ok := cache[results[i].PID]
 		if !ok {
-			name, cmd, exe, user, ppid, cwd, rss := GetProcessDetails(results[i].PID)
+			name, cmd, exe, user, ppid, cwd, rss := GetProcessDetailsContext(opts.Context, results[i].PID)
 			p = types.Process{Name: name, CommandLine: cmd, Exe: exe, User: user, PPID: ppid, Cwd: cwd, MemoryRSS: rss, MemoryHuman: FormatBytes(rss)}
 			cache[results[i].PID] = p
 		}
@@ -126,8 +131,7 @@ func getWindowsProcessInfo(pid int) (string, string) {
 	if pid <= 0 {
 		return "", ""
 	}
-	cmd := exec.Command("tasklist", "/FO", "CSV", "/NH", "/FI", fmt.Sprintf("PID eq %d", pid))
-	out, err := cmd.Output()
+	out, err := Output(context.Background(), "tasklist", "/FO", "CSV", "/NH", "/FI", fmt.Sprintf("PID eq %d", pid))
 	if err != nil {
 		return "", ""
 	}

@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"context"
 	"fmt"
 	"golang.org/x/sys/windows"
 	"path/filepath"
@@ -22,6 +23,15 @@ func StartIdentity(pid int) string {
 	return fmt.Sprintf("%d:%d", created.HighDateTime, created.LowDateTime)
 }
 func GetProcessDetails(pid int) (name, cmdline, exe, user string, ppid int, cwd string, rss uint64) {
+	return GetProcessDetailsContext(context.Background(), pid)
+}
+func GetProcessDetailsContext(ctx context.Context, pid int) (name, cmdline, exe, user string, ppid int, cwd string, rss uint64) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return
+	}
 	h, e := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if e != nil {
 		return
@@ -58,7 +68,14 @@ func GetProcessDetails(pid int) (name, cmdline, exe, user string, ppid int, cwd 
 	}
 	return
 }
-func FindProcessChildren(pid int) []int {
+func FindProcessChildren(pid int) []int { return FindProcessChildrenContext(context.Background(), pid) }
+func FindProcessChildrenContext(ctx context.Context, pid int) []int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	snap, e := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if e != nil {
 		return nil

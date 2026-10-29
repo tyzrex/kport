@@ -41,6 +41,7 @@ func runWatch(ports []int, o options) error {
 	return watchLoop(ctx, ports, o, emit)
 }
 func watchLoop(ctx context.Context, ports []int, o options, emit func(watchEvent)) error {
+	o.ctx = ctx
 	ticker := time.NewTicker(o.interval)
 	defer ticker.Stop()
 	previous := map[string]killport.Process{}
@@ -104,7 +105,7 @@ func watchLoop(ctx context.Context, ports []int, o options, emit func(watchEvent
 			return nil
 		}
 		if !o.observe {
-			for _, r := range executeTargets(ps, killOptions(o), o.allowProtected) {
+			for _, r := range o.service.ExecuteTargets(ps, killOptions(o), o.allowProtected) {
 				ev := watchEvent{Event: "stopped", Port: r.Port, Protocol: r.Process.Protocol, Process: &r.Process, Message: fmt.Sprintf("Stopped %s PID %d on %d/%s", r.Process.Name, r.Process.PID, r.Port, r.Process.Protocol)}
 				if r.Error != nil {
 					ev.Event = "error"

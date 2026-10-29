@@ -1,13 +1,21 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+
 	"github.com/tyzrex/kport"
 	"github.com/tyzrex/kport/internal/notify"
 	"github.com/tyzrex/kport/internal/tui"
 )
 
 func runDashboard(ports []int, o options) error {
+	if o.ctx == nil {
+		o.ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(o.ctx)
+	defer cancel()
+	o.ctx = ctx
 	opts := killOptions(o)
 	return tui.Run(tui.Options{
 		Interval: o.interval, Sort: o.sortBy, Exposure: o.exposure, DryRun: o.dry || o.inspect || o.list, Force: o.force, Tree: o.tree, Wait: o.wait, NoColor: o.noColor,
@@ -25,7 +33,7 @@ func runDashboard(ports []int, o options) error {
 		},
 		Execute: func(ps []killport.Process, force bool) []killport.KillResult {
 			opts.Force = force
-			rs := executeTargets(ps, opts, o.allowProtected)
+			rs := o.service.ExecuteTargets(ps, opts, o.allowProtected)
 			if o.notify {
 				for _, r := range rs {
 					if r.Killed {
@@ -39,7 +47,7 @@ func runDashboard(ports []int, o options) error {
 			if pid <= 0 {
 				return killport.Process{}, fmt.Errorf("no parent")
 			}
-			return killport.GetProcessDetails(pid)
+			return killport.GetProcessDetailsContext(ctx, pid)
 		},
 	})
 }

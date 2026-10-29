@@ -3,19 +3,28 @@
 package proc
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 )
 
 func GetProcessDetails(pid int) (name, cmdline, exe, user string, ppid int, cwd string, rss uint64) {
+	return GetProcessDetailsContext(context.Background(), pid)
+}
+func GetProcessDetailsContext(ctx context.Context, pid int) (name, cmdline, exe, user string, ppid int, cwd string, rss uint64) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return
+	}
 	if runtime.GOOS != "darwin" {
 		return getProcDetails(pid)
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "ppid=,rss=,user=,comm=").Output()
+	out, err := Output(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "ppid=,rss=,user=,comm=")
 	if err != nil {
 		return
 	}
@@ -32,9 +41,9 @@ func GetProcessDetails(pid int) (name, cmdline, exe, user string, ppid int, cwd 
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
 	}
-	out, _ = exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	out, _ = Output(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "command=")
 	cmdline = strings.TrimSpace(string(out))
-	out, _ = exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+	out, _ = Output(ctx, "lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn")
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "n") {
 			cwd = line[1:]
@@ -61,18 +70,25 @@ func startUnixIdentity(pid int) string {
 		}
 		return ""
 	}
-	out, e := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	out, e := Output(context.Background(), "ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
 	if e != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
 
-func FindProcessChildren(pid int) []int {
+func FindProcessChildren(pid int) []int { return FindProcessChildrenContext(context.Background(), pid) }
+func FindProcessChildrenContext(ctx context.Context, pid int) []int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	if runtime.GOOS != "darwin" {
 		return findProcChildren(pid)
 	}
-	out, e := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	out, e := Output(ctx, "ps", "-axo", "pid=,ppid=")
 	if e != nil {
 		return nil
 	}
