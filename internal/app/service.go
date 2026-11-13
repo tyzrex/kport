@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -34,6 +35,87 @@ func ExpandTargets(targets, all []killport.Process) []killport.Process {
 		}
 	}
 	return expanded
+}
+
+// ActionPlan is a reviewable snapshot of affected sockets and validated policy.
+// PrepareAction is read-only; ExecutePlan rejects changes observed on revalidation.
+type ActionPlan struct {
+	Targets        []killport.Process `json:"targets"`
+	Impact         []killport.Process `json:"impact"`
+	Issues         []PlanIssue        `json:"issues,omitempty"`
+	KillTree       bool               `json:"kill_tree"`
+	AllowProtected bool               `json:"allow_protected"`
+	created        time.Time
+}
+type PlanIssue struct {
+	Process killport.Process `json:"process"`
+	Code    ErrorCode        `json:"code"`
+	Message string           `json:"message"`
+}
+
+func (s *Service) PrepareAction(ctx context.Context, targets []killport.Process, opts killport.KillOptions, allowProtected bool) (ActionPlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opts.Context = ctx
+	all, err := s.Discover(ctx, killport.FindOptions{IncludeTree: opts.KillTree})
+	if err != nil {
+		return ActionPlan{}, err
+	}
+	impact := ExpandTargets(targets, all)
+	plan := ActionPlan{Targets: append([]killport.Process(nil), targets...), Impact: impact, KillTree: opts.KillTree, AllowProtected: allowProtected}
+	for _, p := range impact {
+		if p.ContainerID == "" && p.StartID == "" {
+			plan.Issues = append(plan.Issues, PlanIssue{p, CodeIdentityUnavailable, "cannot verify process identity"})
+			continue
+		}
+		if err := s.CheckProtection(p, all, opts.KillTree, allowProtected); err != nil {
+			plan.Issues = append(plan.Issues, PlanIssue{p, ClassifyError(err), err.Error()})
+		}
+	}
+	return plan, nil
+}
+
+func (s *Service) ExecutePlan(ctx context.Context, plan ActionPlan, opts killport.KillOptions) []killport.KillResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opts.Context = ctx
+	all, err := s.Discover(ctx, killport.FindOptions{IncludeTree: plan.KillTree})
+	if err != nil {
+		return failedPlan(plan, err, ClassifyError(err))
+	}
+	expected := socketSet(ExpandTargets(plan.Targets, plan.Impact))
+	current := socketSet(ExpandTargets(plan.Targets, all))
+	if !equalSet(expected, current) {
+		return failedPlan(plan, errors.New("action impact changed; refresh the plan before stopping"), CodeStalePlan)
+	}
+	return s.ExecuteTargets(plan.Targets, opts, plan.AllowProtected)
+}
+func failedPlan(plan ActionPlan, err error, code ErrorCode) []killport.KillResult {
+	rs := make([]killport.KillResult, 0, len(plan.Impact))
+	for _, p := range plan.Impact {
+		rs = append(rs, killport.KillResult{Port: p.Port, Process: p, Error: err, ErrorCode: string(code)})
+	}
+	return rs
+}
+func socketSet(ps []killport.Process) map[string]bool {
+	set := map[string]bool{}
+	for _, p := range ps {
+		set[Identity(p)+":"+fmt.Sprint(p.Port)+":"+string(p.Protocol)+":"+p.Address] = true
+	}
+	return set
+}
+func equalSet(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // ExecuteTargets is shared by CLI, dashboard, project mode, and watch mode.
@@ -142,6 +224,9 @@ func (s *Service) ExecuteTargets(ps []killport.Process, opts killport.KillOption
 				}
 			}
 		}
+	}
+	for i := range results {
+		setErrorCode(&results[i])
 	}
 	return results
 }

@@ -64,3 +64,30 @@ func TestDockerEnrichmentRespectsQuery(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestErrorCodesAreStable(t *testing.T) {
+	cases := []struct {
+		err  error
+		want ErrorCode
+	}{
+		{context.Canceled, CodeCancelled},
+		{context.DeadlineExceeded, CodeTimedOut},
+		{errors.New("port 22 protected (SSH)"), CodeProtectedTarget},
+		{errors.New("cannot verify PID identity"), CodeIdentityUnavailable},
+		{errors.New("container mapping changed; refresh"), CodeMappingChanged},
+		{errors.New("permission denied"), CodePermissionDenied},
+	}
+	for _, tc := range cases {
+		if got := ClassifyError(tc.err); got != tc.want {
+			t.Errorf("%q => %s, want %s", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestImpactSetDetectsNewSocket(t *testing.T) {
+	before := []killport.Process{{PID: 10, StartID: "a", Port: 3000, Protocol: killport.ProtocolTCP, Address: "127.0.0.1:3000"}}
+	after := append(append([]killport.Process(nil), before...), killport.Process{PID: 10, StartID: "a", Port: 3001, Protocol: killport.ProtocolTCP, Address: "127.0.0.1:3001"})
+	if equalSet(socketSet(before), socketSet(after)) {
+		t.Fatal("new sibling socket was omitted from stale plan check")
+	}
+}

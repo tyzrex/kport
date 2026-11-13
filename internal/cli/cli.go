@@ -392,6 +392,7 @@ func outputResults(rs []killport.KillResult, o options) error {
 		Signal         string           `json:"signal,omitempty"`
 		ChildrenKilled int              `json:"children_killed,omitempty"`
 		Error          string           `json:"error,omitempty"`
+		ErrorCode      string           `json:"error_code,omitempty"`
 	}
 	out := []result{}
 	for _, r := range rs {
@@ -399,7 +400,7 @@ func outputResults(rs []killport.KillResult, o options) error {
 		if r.Error != nil {
 			message = r.Error.Error()
 		}
-		out = append(out, result{PID: r.Process.PID, Name: r.Process.Name, Port: r.Port, Process: r.Process, Killed: r.Killed, Signal: r.Signal, ChildrenKilled: r.ChildrenKilled, Error: message})
+		out = append(out, result{PID: r.Process.PID, Name: r.Process.Name, Port: r.Port, Process: r.Process, Killed: r.Killed, Signal: r.Signal, ChildrenKilled: r.ChildrenKilled, Error: message, ErrorCode: r.ErrorCode})
 		if !o.json {
 			if r.Error != nil {
 				fmt.Printf("Failed PID %d port %d: %v\n", r.Process.PID, r.Port, r.Error)

@@ -70,6 +70,7 @@ type KillResult struct {
 	Signal         string  `json:"signal,omitempty"`
 	ChildrenKilled int     `json:"children_killed,omitempty"`
 	Error          error   `json:"error,omitempty"`
+	ErrorCode      string  `json:"error_code,omitempty"`
 }
 
 // FindOptions configures the process discovery behavior.

@@ -204,6 +204,13 @@ also provides `GetProcessDetailsContext` and `WaitForFreeContext`. OS query comm
 have a three-second deadline, and Docker discovery retains its two-second budget.
 Cancellation stops pending work and escalation; it cannot undo signals already sent.
 
+Desktop adapters can call `Service.PrepareAction` to get an `ActionPlan` containing
+the selected owners, affected sockets, and safety issues. `ExecutePlan` rediscovers
+and compares the impact before acting; a changed plan returns `stale_plan` results.
+Action results include stable `error_code` values such as `protected_target`,
+`permission_denied`, `identity_changed`, `mapping_changed`, `timed_out`, and
+`discovery_failed`, while retaining the human-readable error message.
+
 macOS discovery distinguishes normal `lsof` no-match results from failures, and
 fails explicitly on command errors instead of reporting an empty listener list.
 Process metadata is collected in batches per snapshot, with start identities
