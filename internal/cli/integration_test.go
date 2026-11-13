@@ -310,3 +310,42 @@ func TestWatchReportsRespawnAndHonorsCancellation(t *testing.T) {
 	}
 	assertListening(t, port)
 }
+
+func TestJSONPlanCanBeReviewedAndExecuted(t *testing.T) {
+	dir := t.TempDir()
+	_, port := listener(t, dir)
+	planCmd := command(t, dir, "--json", "--plan", strconv.Itoa(port))
+	planOut, err := planCmd.Output()
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	var plan struct {
+		Targets []killport.Process `json:"targets"`
+		Impact  []killport.Process `json:"impact"`
+	}
+	if err = json.Unmarshal(planOut, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Targets) == 0 || len(plan.Impact) == 0 {
+		t.Fatalf("empty plan: %s", planOut)
+	}
+	path := filepath.Join(t.TempDir(), "plan.json")
+	if err = os.WriteFile(path, planOut, 0600); err != nil {
+		t.Fatal(err)
+	}
+	execCmd := command(t, dir, "--json", "--execute-plan", path)
+	out, err := execCmd.Output()
+	if err != nil {
+		t.Fatalf("execute plan: %v: %s", err, out)
+	}
+	var results []struct {
+		ErrorCode string `json:"error_code"`
+		Killed    bool   `json:"killed"`
+	}
+	if err = json.Unmarshal(out, &results); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 || !results[0].Killed {
+		t.Fatalf("plan did not stop target: %s", out)
+	}
+}

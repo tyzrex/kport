@@ -231,3 +231,18 @@ Tests start isolated Go listener subprocesses and do not require Python except f
 ## License
 
 MIT © [tyzrex](https://github.com/tyzrex)
+
+## Desktop JSON bridge
+
+The CLI exposes the shared action plan for native frontends. Ask for JSON and a
+plan; the output contains `targets`, expanded `impact`, and any safety `issues`:
+
+```sh
+kport --json --plan 3000 > plan.json
+kport --json --execute-plan plan.json
+```
+
+Review the plan in the UI before executing it. Execution rechecks the current
+socket impact and process identities and returns structured results with
+`error_code` and `error` fields. Use `--json --list` (optionally with ports and
+filters) for read-only refreshes. Keep stdout for JSON and stderr for diagnostics.

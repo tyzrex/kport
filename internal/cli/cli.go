@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -27,14 +28,15 @@ import (
 )
 
 type options struct {
-	service                                                                              *app.Service
-	ctx                                                                                  context.Context
-	pid                                                                                  int
-	startID                                                                              string
-	force, graceful, dry, list, json, verbose, quiet, confirm, ui                        bool
-	watch, observe, wait, tree, inspect, notify, bench, allowProtected, noColor, version bool
-	protocol, name, user, project, exposure, sortBy                                      string
-	timeout, interval, waitTimeout                                                       time.Duration
+	service                                                                                    *app.Service
+	ctx                                                                                        context.Context
+	pid                                                                                        int
+	startID                                                                                    string
+	force, graceful, dry, list, json, verbose, quiet, confirm, ui                              bool
+	watch, observe, wait, tree, inspect, notify, bench, allowProtected, noColor, version, plan bool
+	executePlan                                                                                string
+	protocol, name, user, project, exposure, sortBy                                            string
+	timeout, interval, waitTimeout                                                             time.Duration
 }
 
 func Run(version string) {
@@ -94,6 +96,8 @@ func run(args []string, version string) error {
 	boolFlag(&o.allowProtected, false, "Explicitly allow protected ports", "force-protected")
 	boolFlag(&o.noColor, false, "Disable terminal color", "no-color")
 	boolFlag(&o.version, false, "Print version", "version")
+	boolFlag(&o.plan, false, "Output a reviewable JSON action plan", "plan")
+	strFlag(&o.executePlan, "", "Execute a reviewed plan JSON file", "execute-plan")
 	strFlag(&o.protocol, "all", "tcp, udp, or all", "p", "protocol")
 	strFlag(&o.name, "", "Name/command substring", "n", "name")
 	strFlag(&o.user, "", "Restrict to an exact user name", "user")
@@ -163,10 +167,43 @@ func run(args []string, version string) error {
 	if o.watch && o.observe {
 		return fmt.Errorf("choose --watch or --observe")
 	}
+	if o.plan && (o.dry || o.list || o.inspect || o.watch || o.observe) {
+		return fmt.Errorf("--plan cannot be combined with read-only or watch modes")
+	}
 	if o.ui && (o.json || o.quiet || o.watch || o.observe) {
 		return fmt.Errorf("--ui cannot be combined with --json, --quiet, --watch, or --observe")
 	}
 	args = fs.Args()
+	if o.executePlan != "" {
+		if !o.json {
+			return fmt.Errorf("--execute-plan requires --json")
+		}
+		if len(args) > 0 {
+			return fmt.Errorf("--execute-plan cannot be combined with port arguments")
+		}
+		f, e := os.Open(o.executePlan)
+		if e != nil {
+			return e
+		}
+		defer f.Close()
+		var plan app.ActionPlan
+		dec := json.NewDecoder(io.LimitReader(f, 4<<20))
+		if e = dec.Decode(&plan); e != nil {
+			return fmt.Errorf("read action plan: %w", e)
+		}
+		var extra any
+		if e = dec.Decode(&extra); e != io.EOF {
+			return fmt.Errorf("action plan must contain one JSON value")
+		}
+		rs := o.service.ExecutePlan(o.ctx, plan, killOptions(o))
+		if e = outputResults(rs, o); e != nil {
+			return e
+		}
+		if resultsError(rs) {
+			return fmt.Errorf("one or more planned targets failed")
+		}
+		return nil
+	}
 	start := time.Now()
 	if o.bench && !o.quiet && !o.json {
 		defer func() { fmt.Printf("Completed in %v\n", time.Since(start).Round(time.Microsecond)) }()
@@ -228,6 +265,16 @@ func run(args []string, version string) error {
 		}
 	}
 	readonly := o.list || o.inspect || o.dry || len(args) == 0
+	if o.plan {
+		if !o.json {
+			return fmt.Errorf("--plan requires --json")
+		}
+		plan, e := o.service.PrepareAction(o.ctx, ps, killOptions(o), o.allowProtected)
+		if e != nil {
+			return e
+		}
+		return json.NewEncoder(os.Stdout).Encode(plan)
+	}
 	if readonly {
 		return outputProcesses(ps, o)
 	}
