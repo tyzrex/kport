@@ -1,33 +1,75 @@
 <div align="center">
 
-# ⚡ kport (`killport`)
+<img src="assets/kport-mark.svg" width="96" height="96" alt="kport logo">
 
-**A cross-platform port manager for local development.**
+# kport
 
-[![CI](https://img.shields.io/github/actions/workflow/status/tyzrex/kport/ci.yml?branch=main)](https://github.com/tyzrex/kport/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+**See what owns your ports. Stop conflicts safely.**
 
-Inspect listeners, stop a conflicting server, monitor port changes, or manage your development session in a live terminal dashboard.
+A port manager for local development, with a live terminal dashboard and a native SwiftUI app for macOS.
+
+[![CI](https://img.shields.io/github/actions/workflow/status/tyzrex/kport/ci.yml?branch=main&label=CI)](https://github.com/tyzrex/kport/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/tyzrex/kport?label=release)](https://github.com/tyzrex/kport/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
 
-## Installation
+## Get started
 
-Requires Go 1.23 or newer when building from source:
+### Install the command line tool
 
-```sh
-go install github.com/tyzrex/kport/cmd/kport@latest
-# Equivalent command under the original name:
-go install github.com/tyzrex/kport/cmd/killport@latest
-```
-
-Prebuilt binaries are available on [GitHub Releases](https://github.com/tyzrex/kport/releases). Linux/macOS installer:
+**macOS / Linux** — install the latest release (or build with Go 1.23+):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tyzrex/kport/main/install.sh | sh
 ```
 
-Both command names use the same implementation. Linux discovery uses `/proc` with system-tool fallbacks; macOS uses `lsof` and `ps`; Windows uses `netstat` and native process APIs. Terminal handling uses `golang.org/x/term`; Compose parsing uses YAML v3. Docker and desktop notifications are optional integrations.
+Or install directly with Go:
+
+```sh
+go install github.com/tyzrex/kport/cmd/kport@latest
+```
+
+Make sure Go's bin directory is on your `PATH` (`$(go env GOPATH)/bin`). Download standalone archives from [GitHub Releases](https://github.com/tyzrex/kport/releases/latest). On Windows, install with Go or download the Windows archive and place `kport.exe` on your `PATH`.
+
+### Install the macOS app
+
+The app is SwiftUI and currently built locally. Install Go and Xcode, clone the repository, then run:
+
+```sh
+git clone https://github.com/tyzrex/kport.git
+cd kport
+macos/KPort/Scripts/build-app.sh
+open dist/KPort.app
+```
+
+The script builds a self-contained, ad hoc signed `dist/KPort.app` for this Mac, including the matching Go CLI and app icon. Drag it into Applications to keep it there. The app refreshes listeners automatically; use the toolbar search and protocol filter to narrow the list. Select a listener to inspect it, then choose **Stop Process…** to review the affected ports before confirming.
+
+For development, set `KPORT_CLI_PATH` to use a separately built CLI. Release downloads for the signed macOS app are not published yet; the app is not notarized, so macOS may ask you to approve opening it.
+
+### First commands
+
+```sh
+kport --json --list             # List listeners without stopping anything
+kport --inspect 3000            # Inspect a port
+kport -d 3000                    # Preview an action
+kport 3000                       # Stop gracefully, then force after timeout
+kport                            # Open the live terminal dashboard
+```
+
+Both `kport` and `killport` command names are available. The app and CLI use the same Go process manager and protection rules.
+
+## JSON interface for apps
+
+Native frontends can request listener data and a reviewable action plan. Execution rechecks the plan before stopping anything:
+
+```sh
+kport --json --list
+kport --json --plan 3000 > plan.json
+kport --json --execute-plan plan.json
+```
+
+Action results include stable `error_code` and readable `error` fields.
 
 ## Everyday commands
 
@@ -231,18 +273,3 @@ Tests start isolated Go listener subprocesses and do not require Python except f
 ## License
 
 MIT © [tyzrex](https://github.com/tyzrex)
-
-## Desktop JSON bridge
-
-The CLI exposes the shared action plan for native frontends. Ask for JSON and a
-plan; the output contains `targets`, expanded `impact`, and any safety `issues`:
-
-```sh
-kport --json --plan 3000 > plan.json
-kport --json --execute-plan plan.json
-```
-
-Review the plan in the UI before executing it. Execution rechecks the current
-socket impact and process identities and returns structured results with
-`error_code` and `error` fields. Use `--json --list` (optionally with ports and
-filters) for read-only refreshes. Keep stdout for JSON and stderr for diagnostics.

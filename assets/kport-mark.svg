@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">kport</title>
+  <defs>
+    <linearGradient id="bg" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17263c"/><stop offset="1" stop-color="#0b111c"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="36" y1="30" x2="94" y2="99" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#78f0c4"/><stop offset="1" stop-color="#42cfa9"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="29" fill="url(#bg)"/>
+  <path d="M39 28v72M39 67l31-29M48 59l28 41" fill="none" stroke="url(#accent)" stroke-linecap="round" stroke-linejoin="round" stroke-width="11"/>
+  <path d="M80 42h15M80 64h15M80 86h15" fill="none" stroke="#f4f8fb" stroke-linecap="round" stroke-width="7" opacity=".92"/>
+  <circle cx="101" cy="42" r="4" fill="#78f0c4"/>
+  <circle cx="101" cy="64" r="4" fill="#78f0c4"/>
+  <circle cx="101" cy="86" r="4" fill="#78f0c4"/>
+</svg>

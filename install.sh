@@ -2,7 +2,7 @@
 set -e
 
 # killport installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/tyzrex/killport/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/tyzrex/kport/main/install.sh | sh
 
 REPO="tyzrex/kport"
 BIN_NAME="killport"
@@ -25,10 +25,12 @@ echo "==> Installing killport to $INSTALL_DIR..."
 if command -v go >/dev/null 2>&1; then
     echo "==> Building from source with Go..."
     go install github.com/tyzrex/kport/cmd/killport@latest
-    if [ -f "$HOME/go/bin/killport" ]; then
-        cp "$HOME/go/bin/killport" "$INSTALL_DIR/killport"
+    GO_BIN="$(go env GOBIN)"
+    if [ -z "$GO_BIN" ]; then GO_BIN="$(go env GOPATH)/bin"; fi
+    if [ -x "$GO_BIN/killport" ]; then
+        cp "$GO_BIN/killport" "$INSTALL_DIR/killport"
         ln -sf "$INSTALL_DIR/killport" "$INSTALL_DIR/$ALIAS_NAME"
-        echo "✓ Successfully installed killport & $ALIAS_NAME to $INSTALL_DIR"
+        echo "Installed kport and killport in $INSTALL_DIR"
         exit 0
     fi
 fi
@@ -43,9 +45,10 @@ case "$ARCH" in
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-LATEST_TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
-    LATEST_TAG="v1.1.0"
+    echo "Could not determine the latest release. Install Go or download from https://github.com/$REPO/releases" >&2
+    exit 1
 fi
 
 URL="https://github.com/$REPO/releases/download/$LATEST_TAG/killport_${OS}_${ARCH}.tar.gz"
