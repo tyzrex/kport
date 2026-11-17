@@ -9,9 +9,7 @@ struct KPortApp: App {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 920, minHeight: 620)
-                .preferredColorScheme(.dark)
         }
-        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Ports") {

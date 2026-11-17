@@ -74,6 +74,7 @@ final class PortViewModel: ObservableObject {
         }
     }
     var ownerCount: Int { Set(processes.map(\.ownerKey)).count }
+    var filterTitle: String { filter == "All" ? "All Ports" : "\(filter) Ports" }
 
     init() {
         refresh()
